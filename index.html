@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JogRoute — générateur de parcours de jogging</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <aside id="side">
+    <header>
+      <h1>🏃 JogRoute</h1>
+      <p>Parcours optimisé sur les chemins, à partir d'un point de départ.</p>
+    </header>
+
+    <div class="section">
+      <h2>1 · Point de départ</h2>
+      <div class="row" style="margin-bottom:8px">
+        <input type="text" id="search" placeholder="Adresse, ville, lieu…">
+        <button id="btnSearch" style="flex:0 0 auto">🔍</button>
+      </div>
+      <div class="row">
+        <button id="btnGeo" class="ghost">📍 Ma position</button>
+      </div>
+      <p class="hint" id="startInfo">Cliquez sur la carte pour poser le départ (ou déplacez le marqueur).</p>
+    </div>
+
+    <div class="section">
+      <h2>2 · Parcours</h2>
+      <label class="field">
+        <span>Distance visée <b id="distOut">8,0 km</b></span>
+        <input type="range" id="dist" min="1" max="42" step="0.5" value="8">
+      </label>
+      <label class="field">
+        <span>Type de tracé</span>
+        <select id="mode">
+          <option value="loop">Boucle (départ = arrivée)</option>
+          <option value="outback">Aller-retour (même itinéraire)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Allure <b id="paceOut">6:00 /km</b></span>
+        <input type="range" id="pace" min="3" max="9" step="0.25" value="6">
+      </label>
+    </div>
+
+    <div class="section">
+      <h2>3 · Direction générale</h2>
+      <div class="compass" id="compass">
+        <button data-dir="315">NO</button>
+        <button data-dir="0">N</button>
+        <button data-dir="45">NE</button>
+        <button data-dir="270">O</button>
+        <button data-dir="" class="on">Peu&nbsp;importe</button>
+        <button data-dir="90">E</button>
+        <button data-dir="225">SO</button>
+        <button data-dir="180">S</button>
+        <button data-dir="135">SE</button>
+      </div>
+      <label class="field" style="margin-top:10px" id="sectorWrap">
+        <span>Largeur du secteur <b id="sectorOut">120°</b></span>
+        <input type="range" id="sector" min="30" max="240" step="10" value="120">
+      </label>
+    </div>
+
+    <div class="section">
+      <h2>4 · Agrément du parcours</h2>
+      <label class="field">
+        <span>Priorité aux chemins &amp; à la nature <b id="natOut">70 %</b></span>
+        <input type="range" id="nature" min="0" max="100" step="5" value="70">
+      </label>
+      <p class="hint" style="margin:-4px 0 10px">0 % = le plus court · 100 % = le plus agréable (sentiers, parcs, rues calmes), quitte à rallonger.</p>
+      <label class="check"><input type="checkbox" id="green" checked> Favoriser parcs, bois et espaces verts</label>
+      <label class="check"><input type="checkbox" id="steps" checked> Éviter les escaliers</label>
+      <label class="check"><input type="checkbox" id="varied" checked> Éviter de repasser au même endroit</label>
+    </div>
+
+    <div class="section">
+      <button class="primary" id="btnGo">Générer le parcours</button>
+    </div>
+
+    <div id="status"><span class="msg"></span><div class="bar"><i></i></div></div>
+
+    <div class="section" id="results" style="display:none">
+      <h2>Résultat</h2>
+      <div class="kpis">
+        <div class="kpi"><b id="rDist">—</b><span>Distance</span></div>
+        <div class="kpi"><b id="rTime">—</b><span>Durée est.</span></div>
+        <div class="kpi"><b id="rNat">—</b><span>Nature</span></div>
+      </div>
+      <div class="stack" id="rStack"></div>
+      <div class="legend">
+        <span><em style="background:#46d17a"></em>Sentiers / pistes</span>
+        <span><em style="background:#4ea8ff"></em>Voies piétonnes</span>
+        <span><em style="background:#f0c419"></em>Rues calmes</span>
+        <span><em style="background:#ff6b5e"></em>Routes passantes</span>
+      </div>
+      <div class="metrics">
+        <div><span>Revêtement naturel</span><b id="rUnp">—</b></div>
+        <div><span>Dans des espaces verts</span><b id="rGreen">—</b></div>
+        <div><span>Portions parcourues 2×</span><b id="rOver">—</b></div>
+        <div><span>Escaliers</span><b id="rSteps">—</b></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btnGpx">⬇ GPX</button>
+        <button id="btnMore">↻ Autre tracé</button>
+      </div>
+    </div>
+
+    <div class="section" id="variantsBox" style="display:none">
+      <h2>Autres propositions</h2>
+      <div id="variants"></div>
+    </div>
+
+    <div class="section" style="border:0">
+      <p class="hint">Données © contributeurs OpenStreetMap · routage local via l'API Overpass.</p>
+    </div>
+  </aside>
+
+  <div id="map"></div>
+  <div id="maplegend">
+    <div><em style="background:#46d17a"></em> Sentier / piste</div>
+    <div><em style="background:#4ea8ff"></em> Voie piétonne</div>
+    <div><em style="background:#f0c419"></em> Rue calme</div>
+    <div><em style="background:#ff6b5e"></em> Route passante</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/geo.js"></script>
+<script src="js/overpass.js"></script>
+<script src="js/graph.js"></script>
+<script src="js/router.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
