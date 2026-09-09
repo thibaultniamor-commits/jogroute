@@ -2,9 +2,16 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>JogRoute — générateur de parcours de jogging</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<meta name="description" content="Génère un parcours de course à pied agréable (sentiers, parcs, rues calmes) à partir d'un point de départ. Fonctionne hors ligne, export GPX et ouverture dans Google Maps.">
+<meta name="theme-color" content="#0d1116">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,37 +21,68 @@
     <header>
       <h1>🏃 JogRoute</h1>
       <p>Parcours optimisé sur les chemins, à partir d'un point de départ.</p>
+      <div class="hdr-actions">
+        <button id="btnInstall" class="ghost small" hidden>⤓ Installer l'app</button>
+        <span id="offlineBadge" class="badge off" hidden>hors ligne</span>
+      </div>
     </header>
 
     <div class="section">
       <h2>1 · Point de départ</h2>
       <div class="row" style="margin-bottom:8px">
         <input type="text" id="search" placeholder="Adresse, ville, lieu…">
-        <button id="btnSearch" style="flex:0 0 auto">🔍</button>
+        <button id="btnSearch" style="flex:0 0 auto" title="Rechercher">🔍</button>
       </div>
       <div class="row">
         <button id="btnGeo" class="ghost">📍 Ma position</button>
+        <button id="btnFav" class="ghost" title="Enregistrer ce départ">★ Enregistrer</button>
       </div>
+      <div id="favs" class="chips"></div>
       <p class="hint" id="startInfo">Cliquez sur la carte pour poser le départ (ou déplacez le marqueur).</p>
+
+      <div id="endWrap" hidden>
+        <div class="row" style="margin-top:8px">
+          <button id="btnSetEnd" class="ghost">🏁 Définir l'arrivée</button>
+          <button id="btnClearEnd" class="ghost" style="flex:0 0 auto" title="Retirer l'arrivée">✕</button>
+        </div>
+        <p class="hint" id="endInfo">Aucune arrivée définie.</p>
+      </div>
     </div>
 
     <div class="section">
       <h2>2 · Parcours</h2>
       <label class="field">
-        <span>Distance visée <b id="distOut">8,0 km</b></span>
-        <input type="range" id="dist" min="1" max="42" step="0.5" value="8">
-      </label>
-      <label class="field">
         <span>Type de tracé</span>
         <select id="mode">
           <option value="loop">Boucle (départ = arrivée)</option>
           <option value="outback">Aller-retour (même itinéraire)</option>
+          <option value="p2p">Point à point (départ ≠ arrivée)</option>
         </select>
       </label>
+
+      <label class="field">
+        <span>Objectif</span>
+        <select id="objective">
+          <option value="dist">Distance</option>
+          <option value="time">Durée</option>
+        </select>
+      </label>
+
+      <label class="field" id="distWrap">
+        <span>Distance visée <b id="distOut">8,0 km</b></span>
+        <input type="range" id="dist" min="1" max="42" step="0.5" value="8">
+      </label>
+
+      <label class="field" id="timeWrap" hidden>
+        <span>Durée visée <b id="timeOut">45 min</b></span>
+        <input type="range" id="minutes" min="10" max="240" step="5" value="45">
+      </label>
+
       <label class="field">
         <span>Allure <b id="paceOut">6:00 /km</b></span>
         <input type="range" id="pace" min="3" max="9" step="0.25" value="6">
       </label>
+      <p class="hint" style="margin:-4px 0 0" id="paceHint">Sert à estimer la durée — et à viser un objectif de temps en tenant compte des pentes.</p>
     </div>
 
     <div class="section">
@@ -64,10 +102,28 @@
         <span>Largeur du secteur <b id="sectorOut">120°</b></span>
         <input type="range" id="sector" min="30" max="240" step="10" value="120">
       </label>
+      <div class="row">
+        <button id="btnWind" class="ghost">🌬 Partir face au vent</button>
+      </div>
+      <p class="hint" id="windInfo">Aller face au vent, rentrer poussé par lui — la météo est récupérée au moment du calcul.</p>
     </div>
 
     <div class="section">
-      <h2>4 · Agrément du parcours</h2>
+      <h2>4 · Relief</h2>
+      <label class="field">
+        <span>Terrain <b id="hillOut">indifférent</b></span>
+        <input type="range" id="hilliness" min="-100" max="100" step="10" value="0">
+      </label>
+      <p class="hint" style="margin:-4px 0 10px">À gauche : chercher le plat. À droite : chercher les bosses.</p>
+      <label class="field">
+        <span>Dénivelé positif visé <b id="dplusOut">peu importe</b></span>
+        <input type="range" id="dplus" min="0" max="1200" step="25" value="0">
+      </label>
+      <p class="hint" id="eleHint">Altitude issue des tuiles Terrarium (AWS Open Data), sans clé ni compte.</p>
+    </div>
+
+    <div class="section">
+      <h2>5 · Agrément du parcours</h2>
       <label class="field">
         <span>Priorité aux chemins &amp; à la nature <b id="natOut">70 %</b></span>
         <input type="range" id="nature" min="0" max="100" step="5" value="70">
@@ -76,6 +132,22 @@
       <label class="check"><input type="checkbox" id="green" checked> Favoriser parcs, bois et espaces verts</label>
       <label class="check"><input type="checkbox" id="steps" checked> Éviter les escaliers</label>
       <label class="check"><input type="checkbox" id="varied" checked> Éviter de repasser au même endroit</label>
+      <label class="check"><input type="checkbox" id="round" checked> Privilégier les vraies boucles (pas d'aller-retour déguisé)</label>
+      <label class="check"><input type="checkbox" id="night"> Mode nuit : rues éclairées, éviter les coins isolés</label>
+    </div>
+
+    <div class="section">
+      <h2>6 · Nouveauté &amp; ravitaillement</h2>
+      <label class="field">
+        <span>Éviter ce que j'ai déjà couru <b id="freshOut">15 derniers jours</b></span>
+        <input type="range" id="fresh" min="0" max="60" step="5" value="15">
+      </label>
+      <p class="hint" style="margin:-4px 0 10px" id="freshHint">Les parcours générés sont mémorisés localement pour varier les propositions.</p>
+      <label class="field">
+        <span>Point d'eau au moins tous les <b id="waterOut">peu importe</b></span>
+        <input type="range" id="water" min="0" max="10" step="1" value="0">
+      </label>
+      <p class="hint" id="waterHint">Fontaines et toilettes publiques cartographiées dans OSM.</p>
     </div>
 
     <div class="section">
@@ -89,8 +161,15 @@
       <div class="kpis">
         <div class="kpi"><b id="rDist">—</b><span>Distance</span></div>
         <div class="kpi"><b id="rTime">—</b><span>Durée est.</span></div>
+        <div class="kpi"><b id="rClimb">—</b><span>Dénivelé +</span></div>
         <div class="kpi"><b id="rNat">—</b><span>Nature</span></div>
       </div>
+
+      <div id="profileBox" hidden>
+        <div class="sub">Profil altimétrique</div>
+        <div id="profile"></div>
+      </div>
+
       <div class="stack" id="rStack"></div>
       <div class="legend">
         <span><em style="background:#46d17a"></em>Sentiers / pistes</span>
@@ -102,12 +181,22 @@
         <div><span>Revêtement naturel</span><b id="rUnp">—</b></div>
         <div><span>Dans des espaces verts</span><b id="rGreen">—</b></div>
         <div><span>Portions parcourues 2×</span><b id="rOver">—</b></div>
+        <div><span>Voies éclairées</span><b id="rLit">—</b></div>
         <div><span>Escaliers</span><b id="rSteps">—</b></div>
+        <div><span>Forme de la boucle</span><b id="rShape">—</b></div>
+        <div><span>Points d'eau sur le trajet</span><b id="rWater">—</b></div>
+        <div><span>Plus longue portion sans eau</span><b id="rDry">—</b></div>
       </div>
-      <div class="row" style="margin-top:12px">
+
+      <div class="btn-grid" style="margin-top:12px">
+        <button id="btnGmaps" class="primary-soft">🗺 Ouvrir dans Google Maps</button>
+        <button id="btnQr">📱 QR pour le téléphone</button>
+        <button id="btnShare">🔗 Partager le lien</button>
         <button id="btnGpx">⬇ GPX</button>
+        <button id="btnSaveRun">✓ J'ai couru ça</button>
         <button id="btnMore">↻ Autre tracé</button>
       </div>
+      <p class="hint" id="shareHint" style="margin-top:8px"></p>
     </div>
 
     <div class="section" id="variantsBox" style="display:none">
@@ -115,8 +204,23 @@
       <div id="variants"></div>
     </div>
 
+    <div class="section">
+      <h2>Hors ligne</h2>
+      <p class="hint" style="margin-top:0">Les zones téléchargées restent utilisables sans réseau — pratique en voyage ou en forêt.</p>
+      <div class="row">
+        <button id="btnOffline" class="ghost">⤓ Garder cette zone hors ligne</button>
+      </div>
+      <div id="zones" class="zones"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnClearZones" class="ghost small">Vider le cache des zones</button>
+        <button id="btnClearRuns" class="ghost small">Effacer l'historique</button>
+      </div>
+      <p class="hint" id="storageInfo"></p>
+    </div>
+
     <div class="section" style="border:0">
-      <p class="hint">Données © contributeurs OpenStreetMap · routage local via l'API Overpass.</p>
+      <p class="hint">Données © contributeurs OpenStreetMap · relief AWS Terrarium · météo Open-Meteo · calcul 100 % local.</p>
+      <p class="hint"><a href="https://github.com/thibaultniamor-commits/jogroute" target="_blank" rel="noopener">Code source sur GitHub</a></p>
     </div>
   </aside>
 
@@ -129,9 +233,22 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<div id="modal" class="modal" hidden>
+  <div class="modal-card">
+    <button class="modal-close" id="modalClose" aria-label="Fermer">✕</button>
+    <h3 id="modalTitle">Ouvrir sur le téléphone</h3>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/qrcode/qrcode.js"></script>
 <script src="js/geo.js"></script>
+<script src="js/store.js"></script>
 <script src="js/overpass.js"></script>
+<script src="js/elevation.js"></script>
+<script src="js/weather.js"></script>
+<script src="js/share.js"></script>
 <script src="js/graph.js"></script>
 <script src="js/router.js"></script>
 <script src="js/app.js"></script>

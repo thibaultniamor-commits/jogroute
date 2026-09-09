@@ -34,6 +34,17 @@
       ');out geom 400;';
   }
 
+  /* Points d'eau et commodités utiles en sortie longue */
+  function poiQuery(lat, lon, radius) {
+    var r = Math.round(radius);
+    var at = '(around:' + r + ',' + lat + ',' + lon + ');';
+    return '[out:json][timeout:60];(' +
+      'node["amenity"~"^(drinking_water|toilets)$"]' + at +
+      'node["man_made"="water_tap"]["drinking_water"!="no"]' + at +
+      'node["amenity"="fountain"]["drinking_water"="yes"]' + at +
+      ');out body 600;';
+  }
+
   var TIMEOUT = 45000;   // au-delà, on bascule sur un autre miroir
 
   function post(query, signal) {
@@ -64,15 +75,47 @@
     return attempt();
   }
 
-  /* Réseau + espaces verts, téléchargés en parallèle */
+  /* Réseau, puis espaces verts, puis points d'eau — SÉQUENTIELLEMENT.
+     Les serveurs Overpass publics n'accordent que deux créneaux simultanés par
+     adresse IP : lancer les trois requêtes en parallèle faisait rejeter les
+     deux secondaires, et l'app perdait silencieusement parcs et fontaines.
+     Seul le réseau est bloquant ; les autres dégradent, mais le signalent. */
   function fetchArea(lat, lon, radius, onStatus, signal) {
-    onStatus && onStatus('Téléchargement des données OSM (rayon ' +
+    var notes = [];
+    onStatus && onStatus('Téléchargement du réseau OSM (rayon ' +
       (radius / 1000).toFixed(1) + ' km)…');
-    var net = post(netQuery(lat, lon, radius), signal);
-    var green = post(greenQuery(lat, lon, radius), signal)
-      .catch(function () { return { elements: [] }; });
-    return Promise.all([net, green]).then(function (r) {
-      return { network: r[0].elements || [], green: r[1].elements || [] };
+
+    return post(netQuery(lat, lon, radius), signal).then(function (net) {
+      onStatus && onStatus('Espaces verts (parcs, bois)…');
+      return post(greenQuery(lat, lon, radius), signal)
+        .catch(function (e) {
+          notes.push('espaces verts indisponibles (' + (e.message || e) + ')');
+          return { elements: [] };
+        })
+        .then(function (green) {
+          onStatus && onStatus('Points d\'eau et commodités…');
+          return post(poiQuery(lat, lon, radius), signal)
+            .catch(function (e) {
+              notes.push('points d\'eau indisponibles (' + (e.message || e) + ')');
+              return { elements: [] };
+            })
+            .then(function (poi) { return [net, green, poi]; });
+        });
+    }).then(function (r) {
+      var pois = (r[2].elements || []).filter(function (e) {
+        return e.type === 'node' && e.lat !== undefined;
+      }).map(function (e) {
+        var t = e.tags || {};
+        return {
+          lat: e.lat, lon: e.lon,
+          kind: t.amenity === 'toilets' ? 'toilets' : 'water',
+          name: t.name || ''
+        };
+      });
+      return {
+        network: r[0].elements || [], green: r[1].elements || [],
+        pois: pois, notes: notes
+      };
     });
   }
 
@@ -83,5 +126,19 @@
       .then(function (r) { return r.json(); });
   }
 
-  global.Overpass = { fetchArea: fetchArea, geocode: geocode };
+  /* Géocodage inverse : nom lisible d'un point (pour nommer les favoris) */
+  function reverse(lat, lon) {
+    return fetch('https://nominatim.openstreetmap.org/reverse?format=json&zoom=16&lat=' +
+      lat + '&lon=' + lon, { headers: { 'Accept-Language': 'fr' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.address) return null;
+        var a = j.address;
+        return a.road || a.suburb || a.village || a.town || a.city ||
+          (j.display_name || '').split(',')[0] || null;
+      })
+      .catch(function () { return null; });
+  }
+
+  global.Overpass = { fetchArea: fetchArea, geocode: geocode, reverse: reverse };
 })(window);
