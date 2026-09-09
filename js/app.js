@@ -13,6 +13,7 @@
     marker: null,
     endMarker: null,
     pickEnd: false,
+    userPicked: false,     // l'utilisateur a choisi un départ : le GPS ne l'écrase plus
     routes: [],
     current: 0,
     busy: false,
@@ -139,13 +140,17 @@
       state.marker.on('dragend', function (e) {
         var p = e.target.getLatLng();
         state.start = { lat: p.lat, lon: p.lng };
+        state.userPicked = true;
+        clearAccuracy();
         updateStartInfo();
+        saveSettings();
       });
     } else {
       state.marker.setLatLng([lat, lon]);
     }
     if (fly) map.setView([lat, lon], Math.max(map.getZoom(), 14));
     updateStartInfo();
+    saveSettings();
   }
 
   function setEnd(lat, lon) {
@@ -189,6 +194,8 @@
       $('btnSetEnd').textContent = '🏁 Définir l\'arrivée';
       return;
     }
+    state.userPicked = true;
+    clearAccuracy();
     setStart(e.latlng.lat, e.latlng.lng, false);
   });
 
@@ -308,19 +315,147 @@
     Overpass.geocode(q).then(function (r) {
       if (!r || !r.length) { status('Lieu introuvable.', 0, true); return; }
       statusOff();
+      state.userPicked = true;
+      clearAccuracy();
       setStart(+r[0].lat, +r[0].lon, true);
       $('search').value = r[0].display_name.split(',').slice(0, 3).join(',');
     }).catch(function () { status('Recherche impossible (réseau ?).', 0, true); });
   }
 
+  /* ---------------- géolocalisation ----------------
+     Sur téléphone, une seule tentative « haute précision » échoue souvent :
+     à l'intérieur le GPS n'accroche pas, et le premier point peut demander
+     une trentaine de secondes. On procède donc en deux temps — un point
+     rapide (réseau/wifi, éventuellement en cache), puis un affinage GPS en
+     tâche de fond — et surtout on explique chaque échec au lieu de l'avaler. */
+
+  var accCircle = null;
+
+  function showAccuracy(lat, lon, acc) {
+    if (!acc || acc > 3000) { clearAccuracy(); return; }
+    if (!accCircle) {
+      accCircle = L.circle([lat, lon], {
+        radius: acc, color: '#4ea8ff', weight: 1,
+        fillColor: '#4ea8ff', fillOpacity: .08, interactive: false
+      }).addTo(map);
+    } else {
+      accCircle.setLatLng([lat, lon]).setRadius(acc);
+    }
+  }
+
+  function clearAccuracy() {
+    if (accCircle) { map.removeLayer(accCircle); accCircle = null; }
+  }
+
+  /* Cause bloquante connue d'avance (inutile de demander la position). */
+  function geoUnavailableReason() {
+    if (!navigator.geolocation) {
+      return 'Ce navigateur ne propose pas de géolocalisation.';
+    }
+    var h = location.hostname;
+    var local = h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '';
+    if (!window.isSecureContext && !local) {
+      return 'La géolocalisation exige une connexion sécurisée : ouvrez le site en ' +
+        'https:// (adresse actuelle : ' + location.protocol + '//' + location.host + ').';
+    }
+    return null;
+  }
+
+  function geoErrorText(err) {
+    var code = err && err.code;
+    if (code === 1) {
+      return 'Localisation refusée. Autorisez l\'accès à la position pour ce site ' +
+        '(icône à gauche de l\'adresse, ou Réglages → Site), et vérifiez que la ' +
+        'localisation du téléphone est activée.';
+    }
+    if (code === 2) {
+      return 'Position introuvable : le téléphone n\'obtient pas de point. ' +
+        'Activez la localisation, sortez à l\'air libre, puis réessayez.';
+    }
+    if (code === 3) {
+      return 'Le GPS met trop de temps à répondre. Réessayez : le tout premier ' +
+        'point peut demander une trentaine de secondes.';
+    }
+    return (err && err.message) || 'Localisation impossible.';
+  }
+
+  /* Résout au premier point exploitable ; `onUpdate` reçoit les affinages. */
+  function locate(onUpdate) {
+    return new Promise(function (resolve, reject) {
+      var why = geoUnavailableReason();
+      if (why) { reject({ code: 0, message: why }); return; }
+
+      var settled = false, watchId = null, timer = null;
+      var lastErr = null, bestAcc = Infinity;
+
+      function stopWatch() {
+        if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+        clearTimeout(timer);
+      }
+
+      function accept(pos) {
+        var v = {
+          lat: pos.coords.latitude, lon: pos.coords.longitude,
+          acc: pos.coords.accuracy || 0
+        };
+        bestAcc = v.acc;
+        if (!settled) { settled = true; resolve(v); }
+        else if (onUpdate) onUpdate(v);
+        if (v.acc <= 25) stopWatch();       // assez précis, on arrête le GPS
+      }
+
+      /* 2e temps : GPS précis, en tâche de fond. */
+      function refine() {
+        if (bestAcc <= 40) return;
+        watchId = navigator.geolocation.watchPosition(function (pos) {
+          if (!settled || (pos.coords.accuracy || 1e9) < bestAcc) accept(pos);
+        }, function (err) {
+          lastErr = err;
+          if (!settled && err.code === 1) { stopWatch(); reject(err); }
+        }, { enableHighAccuracy: true, timeout: 35000, maximumAge: 0 });
+
+        timer = setTimeout(function () {
+          stopWatch();
+          if (!settled) reject(lastErr || { code: 3 });
+        }, 35000);
+      }
+
+      /* 1er temps : point rapide, accepté même approximatif ou récent. */
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        accept(pos);
+        refine();
+      }, function (err) {
+        lastErr = err;
+        if (err.code === 1) { reject(err); return; }   // refus : insister ne sert à rien
+        refine();
+      }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+    });
+  }
+
   $('btnGeo').addEventListener('click', function () {
-    if (!navigator.geolocation) { status('Géolocalisation indisponible.', 0, true); return; }
-    status('Localisation en cours…', .3);
-    navigator.geolocation.getCurrentPosition(function (p) {
-      statusOff();
-      setStart(p.coords.latitude, p.coords.longitude, true);
-    }, function () { status('Position refusée ou indisponible.', 0, true); },
-      { enableHighAccuracy: true, timeout: 10000 });
+    var btn = this, old = btn.textContent;
+    state.userPicked = true;
+    btn.disabled = true;
+    btn.textContent = '📍 Recherche…';
+    status('Localisation en cours — le premier point GPS peut demander 30 s…', .3);
+
+    locate(function (v) {                       // affinages successifs
+      setStart(v.lat, v.lon, false);
+      showAccuracy(v.lat, v.lon, v.acc);
+      status('Position affinée : précision ' + Math.round(v.acc) + ' m.', 1);
+    }).then(function (v) {
+      setStart(v.lat, v.lon, true);
+      showAccuracy(v.lat, v.lon, v.acc);
+      status('Position trouvée (précision ' + Math.round(v.acc) + ' m).', 1);
+      setTimeout(function () {
+        if (!state.busy) statusOff();
+      }, 4000);
+    }).catch(function (err) {
+      status(geoErrorText(err), 0, true);
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = old;
+    });
   });
 
   $('btnFav').addEventListener('click', function () {
@@ -347,6 +482,8 @@
           renderFavorites();
           return;
         }
+        state.userPicked = true;
+        clearAccuracy();
         setStart(f.lat, f.lon, true);
       });
       box.appendChild(b);
@@ -976,10 +1113,14 @@
   var CHECK_IDS = ['green', 'steps', 'varied', 'round', 'night'];
 
   function saveSettings() {
-    var s = {};
+    /* On repart des préférences stockées : syncLabels() s'exécute au
+       démarrage, avant que le dernier départ ne soit restauré, et un objet
+       neuf effacerait `lastStart` à chaque ouverture. */
+    var s = Store.settings() || {};
     SETTING_IDS.forEach(function (id) { s[id] = $(id).value; });
     CHECK_IDS.forEach(function (id) { s[id] = $(id).checked; });
     s.direction = direction;
+    if (state.start) s.lastStart = { lat: state.start.lat, lon: state.start.lon };
     Store.saveSettings(s);
   }
 
@@ -1096,12 +1237,63 @@
   updateOnline();
   updateEndInfo();
 
+  /* Dernier départ connu : l'app s'ouvre là où on était, même si le GPS
+     tarde ou échoue. */
+  function restoreLastStart() {
+    var s = Store.settings();
+    if (s && s.lastStart && isFinite(s.lastStart.lat) && isFinite(s.lastStart.lon)) {
+      setStart(s.lastStart.lat, s.lastStart.lon, true);
+      return true;
+    }
+    return false;
+  }
+
+  function geoHint(html) { $('startInfo').innerHTML = html; }
+
+  function autoLocate() {
+    var why = geoUnavailableReason();
+    if (why) {
+      geoHint('<b>Position automatique indisponible.</b> ' + escapeHtml(why));
+      return;
+    }
+
+    function attempt() {
+      locate(function (v) {
+        if (state.userPicked) return;
+        setStart(v.lat, v.lon, false);
+        showAccuracy(v.lat, v.lon, v.acc);
+      }).then(function (v) {
+        if (state.userPicked) return;          // l'utilisateur a choisi entre-temps
+        setStart(v.lat, v.lon, true);
+        showAccuracy(v.lat, v.lon, v.acc);
+      }).catch(function (err) {
+        if (state.userPicked) return;
+        geoHint('<b>Position automatique impossible.</b> ' + escapeHtml(geoErrorText(err)) +
+          '<br>Touchez <b>« 📍 Ma position »</b> pour réessayer, cherchez une adresse, ' +
+          'ou touchez simplement la carte.');
+      });
+    }
+
+    /* Si la permission a déjà été refusée, inutile de relancer une demande que
+       le navigateur bloquera : on l'explique tout de suite. */
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' }).then(function (p) {
+        if (p.state === 'denied') {
+          geoHint('<b>Position automatique impossible.</b> ' + escapeHtml(geoErrorText({ code: 1 })));
+          return;
+        }
+        attempt();
+      }).catch(attempt);
+    } else {
+      attempt();
+    }
+  }
+
   var incoming = Share.decodeState(location.hash);
   if (incoming) {
     applyShared(incoming);
-  } else if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(function (p) {
-      if (!state.start) setStart(p.coords.latitude, p.coords.longitude, true);
-    }, function () { }, { timeout: 8000 });
+  } else {
+    restoreLastStart();
+    autoLocate();
   }
 })();
