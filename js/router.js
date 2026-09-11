@@ -40,48 +40,104 @@
     get: function () { return this.k.length; }
   });
 
+  /* ---------- tampons de travail ----------
+     Un Dijkstra sur une zone dense manipule cinq tableaux de la taille du
+     graphe. Les allouer — et les remplir d'Infinity — à chaque appel coûtait
+     très cher : en mode boucle, le retour est recalculé une fois par candidat,
+     soit jusqu'à 24 fois par génération, c'est-à-dire des dizaines de mégaoctets
+     d'allocations et des millions d'écritures inutiles avant même d'avoir
+     exploré quoi que ce soit.
+
+     D'où des tampons réutilisés, et un compteur de génération : `stamp[v] ===
+     gen` signifie « cette valeur a été écrite pendant *ce* parcours ». Rien
+     n'est jamais remis à zéro, et le coût redevient proportionnel aux nœuds
+     réellement visités. Il faut un jeu de tampons par parcours vivant
+     simultanément — l'aller reste lu pendant que le retour se calcule. */
+
+  function Scratch(n) {
+    this.n = n;
+    this.cost = new Float64Array(n);
+    this.len = new Float64Array(n);
+    this.pv = new Int32Array(n);
+    this.pe = new Int32Array(n);
+    this.stamp = new Int32Array(n);     // valeur connue pour cette génération
+    this.dstamp = new Int32Array(n);    // nœud définitivement réglé
+    this.gen = 0;
+    this.seen = [];
+  }
+
+  Scratch.prototype.begin = function () {
+    /* Un Int32 déborderait après deux milliards de parcours ; on repart
+       proprement bien avant, au prix d'un unique effacement. */
+    if (this.gen >= 0x7ffffffe) {
+      this.stamp.fill(0); this.dstamp.fill(0); this.gen = 0;
+    }
+    this.gen++;
+    this.seen = [];
+    return this;
+  };
+
+  /* Accès sûrs : une valeur d'une génération précédente vaut « jamais vue ». */
+  Scratch.prototype.has = function (v) { return this.stamp[v] === this.gen; };
+  Scratch.prototype.lenOf = function (v) {
+    return this.stamp[v] === this.gen ? this.len[v] : Infinity;
+  };
+  Scratch.prototype.costOf = function (v) {
+    return this.stamp[v] === this.gen ? this.cost[v] : Infinity;
+  };
+
+  /* Les tampons sont attachés au graphe et alloués à la demande : une boucle
+     n'en réclame que deux (aller + retour), un point à point trois. */
+  function scratchFor(G, slot) {
+    slot = slot || 0;
+    if (!G.scratches || G.scratches.n !== G.n) G.scratches = { n: G.n, pool: [] };
+    var pool = G.scratches.pool;
+    if (!pool[slot]) pool[slot] = new Scratch(G.n);
+    return pool[slot];
+  }
+
   /* ---------- Dijkstra borné ----------
-     opts : { maxLen, penal (Float32Array par arête), stopAt } */
+     opts : { maxLen, penal (Float32Array par arête), stopAt, scratch } */
   function dijkstra(G, src, opts) {
     opts = opts || {};
-    var n = G.n;
     var maxLen = opts.maxLen === undefined ? Infinity : opts.maxLen;
     var penal = opts.penal || null, stopAt = opts.stopAt;
 
-    var cost = new Float64Array(n).fill(Infinity);
-    var len = new Float64Array(n).fill(Infinity);
-    var pv = new Int32Array(n).fill(-1);
-    var pe = new Int32Array(n).fill(-1);
-    var done = new Uint8Array(n);
-    var seen = [];
+    var S = (opts.scratch || scratchFor(G)).begin();
+    var cost = S.cost, len = S.len, pv = S.pv, pe = S.pe;
+    var stamp = S.stamp, dstamp = S.dstamp, gen = S.gen, seen = S.seen;
 
-    cost[src] = 0; len[src] = 0;
+    cost[src] = 0; len[src] = 0; pv[src] = -1; pe[src] = -1; stamp[src] = gen;
     var h = new Heap();
     h.push(0, src);
 
     while (h.size) {
       var u = h.pop();
-      if (done[u]) continue;
-      done[u] = 1; seen.push(u);
+      if (dstamp[u] === gen) continue;
+      dstamp[u] = gen; seen.push(u);
       if (u === stopAt) break;
       var lu = len[u];
       if (lu > maxLen) continue;
+      var cu = cost[u];
       for (var k = G.off[u]; k < G.off[u + 1]; k++) {
         var v = G.adjTo[k], e = G.adjEdge[k];
-        if (done[v]) continue;
+        if (dstamp[v] === gen) continue;
         var nl = lu + G.elen[e];
         if (nl > maxLen) continue;
-        var c = cost[u] + G.cost[e] * (penal ? penal[e] : 1);
-        if (c < cost[v]) {
-          cost[v] = c; len[v] = nl; pv[v] = u; pe[v] = e;
+        var c = cu + G.cost[e] * (penal ? penal[e] : 1);
+        if (stamp[v] !== gen || c < cost[v]) {
+          cost[v] = c; len[v] = nl; pv[v] = u; pe[v] = e; stamp[v] = gen;
           h.push(c, v);
         }
       }
     }
-    return { cost: cost, len: len, pv: pv, pe: pe, done: done, seen: seen };
+    return S;
   }
 
+  /* Remonte la chaîne des prédécesseurs. `res` doit être le tampon tel qu'il
+     est sorti du parcours : une génération plus récente l'aurait invalidé. */
   function rebuild(res, from, to) {
+    if (!res.has(to)) return null;
     var nodes = [to], edges = [], cur = to, guard = 0;
     while (cur !== from) {
       var e = res.pe[cur], p = res.pv[cur];
@@ -233,15 +289,31 @@
     var penal = new Float32Array(G.m).fill(1);
     var i, cands, out, outB;
 
+    /* Trois parcours peuvent être vivants en même temps : l'aller, le chemin
+       depuis l'arrivée (point à point), et le retour en cours d'évaluation.
+       Chacun son jeu de tampons, sinon ils s'écraseraient l'un l'autre. */
+    var sOut = scratchFor(G, 0), sBack = scratchFor(G, 1), sEnd = null;
+
+    /* L'utilisateur peut renoncer : on le vérifie à chaque respiration. */
+    var stop = typeof p.shouldStop === 'function' ? p.shouldStop : null;
+    function checkStop() {
+      if (stop && stop()) {
+        var e = new Error('calcul annulé');
+        e.cancelled = true;
+        throw e;
+      }
+    }
+
     onProgress && onProgress(0.08, 'Exploration du réseau…');
 
     if (mode === 'p2p') {
       if (p.dst === undefined || p.dst < 0 || p.dst === src) {
         return { routes: [], reason: 'nodst' };
       }
-      out = dijkstra(G, src, { maxLen: target * 0.9 });
-      outB = dijkstra(G, p.dst, { maxLen: target * 0.9 });
-      if (!isFinite(outB.len[src]) && !isFinite(out.len[p.dst])) {
+      sEnd = scratchFor(G, 2);
+      out = dijkstra(G, src, { maxLen: target * 0.9, scratch: sOut });
+      outB = dijkstra(G, p.dst, { maxLen: target * 0.9, scratch: sEnd });
+      if (!isFinite(outB.lenOf(src)) && !isFinite(out.lenOf(p.dst))) {
         return { routes: [], reason: 'unreachable' };
       }
       var midLat = (G.lats[src] + G.lats[p.dst]) / 2;
@@ -250,7 +322,7 @@
       var loP = target * 0.82, hiP = target * 1.18;
       for (i = 0; i < out.seen.length; i++) {
         var vv = out.seen[i];
-        if (!isFinite(outB.len[vv])) continue;
+        if (!outB.has(vv)) continue;
         var L = out.len[vv] + outB.len[vv];
         if (L < loP || L > hiP) continue;
         var brgP = Geo.bearing(midLat, midLon, G.lats[vv], G.lons[vv]);
@@ -263,7 +335,7 @@
       }
       cands = Array.from(bucketsP.values()).sort(function (a, b) { return a.q - b.q; }).slice(0, 18);
     } else {
-      out = dijkstra(G, src, { maxLen: target * 0.62 });
+      out = dijkstra(G, src, { maxLen: target * 0.62, scratch: sOut });
 
       var loFrac = mode === 'outback' ? 0.46 : 0.34;
       var hiFrac = mode === 'outback' ? 0.54 : 0.55;
@@ -305,10 +377,10 @@
         for (j = 0; j < A.edges.length; j++) penal[A.edges[j]] = p.overlap;
         var back = dijkstra(G, c.v, {
           maxLen: Math.max(target * 0.3, target * 1.5 - out.len[c.v]),
-          penal: penal, stopAt: goal
+          penal: penal, stopAt: goal, scratch: sBack
         });
         for (j = 0; j < A.edges.length; j++) penal[A.edges[j]] = 1;
-        if (!isFinite(back.cost[goal])) continue;
+        if (!isFinite(back.costOf(goal))) continue;
         var B = rebuild(back, c.v, goal);
         if (!B) continue;
         nodes = A.nodes.concat(B.nodes.slice(1));
@@ -330,6 +402,7 @@
         onProgress && onProgress(0.1 + 0.85 * (ci / cands.length),
           'Évaluation des tracés… (' + (ci + 1) + '/' + cands.length + ')');
         await sleep();
+        checkStop();
       }
     }
 
@@ -363,7 +436,12 @@
     };
   }
 
+  /* Un jeu de tampons indépendant, pour qui veut mener un parcours sans
+     toucher à ceux que `plan` réutilise. */
+  function scratch(G) { return new Scratch(G.n); }
+
   global.Router = {
-    plan: plan, dijkstra: dijkstra, stats: stats, pack: pack, transferOf: transferOf
+    plan: plan, dijkstra: dijkstra, stats: stats, pack: pack, transferOf: transferOf,
+    scratch: scratch
   };
 })(self);

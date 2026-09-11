@@ -5,7 +5,7 @@
      (les données utiles sont déjà stockées en IndexedDB par l'application) */
 'use strict';
 
-var VERSION = 'jogroute-v2';
+var VERSION = 'jogroute-v3';
 var SHELL = VERSION + '-shell';
 /* Le cache des fonds de carte est volontairement hors version : une mise à
    jour de l'app ne doit pas effacer les tuiles gardées pour l'hors ligne. */
@@ -26,6 +26,7 @@ var ASSETS = [
   'vendor/leaflet/images/layers-2x.png',
   'vendor/qrcode/qrcode.js',
   'js/geo.js',
+  'js/metrics.js',
   'js/store.js',
   'js/overpass.js',
   'js/elevation.js',

@@ -9,6 +9,11 @@ importScripts('geo.js', 'graph.js', 'router.js');
 var G = null;          // graphe courant
 var lastWeights = null;
 
+/* Calculs que la page a renoncé à attendre. Router.plan respire régulièrement
+   et consulte cet ensemble : un « Annuler » cesse donc de coûter du CPU au
+   lieu de se contenter de masquer le résultat. */
+var cancelled = new Set();
+
 function send(msg, transfer) { self.postMessage(msg, transfer || []); }
 
 function summary(id) {
@@ -61,6 +66,10 @@ self.onmessage = function (ev) {
         plan(msg);
         break;
 
+      case 'cancel':                     // la page a renoncé à ce calcul
+        cancelled.add(msg.target);
+        break;
+
       case 'reset':
         G = null;
         break;
@@ -85,16 +94,35 @@ async function plan(msg) {
   lastWeights = w;
   RGraph.weight(G, w);
 
-  var src = RGraph.nearest(G, p.startLat, p.startLon);
-  if (src < 0) { send({ type: 'error', id: id, message: 'Aucun chemin trouvé près du départ.' }); return; }
-  p.src = src;
+  /* `nearest` rend aussi la distance d'accrochage : un départ posé loin de
+     toute voie cartographiée est ramené en silence sur le réseau, et le
+     parcours ne commence alors pas là où l'utilisateur croit. La page le dira. */
+  var start = RGraph.nearest(G, p.startLat, p.startLon);
+  if (start.node < 0) {
+    send({ type: 'error', id: id, message: 'Aucun chemin trouvé près du départ.' });
+    return;
+  }
+  p.src = start.node;
+  var end = null;
   if (p.mode === 'p2p' && p.endLat !== undefined && p.endLat !== null) {
-    p.dst = RGraph.nearest(G, p.endLat, p.endLon);
+    end = RGraph.nearest(G, p.endLat, p.endLon);
+    p.dst = end.node;
   }
 
-  var res = await Router.plan(G, p, function (frac, m) {
-    send({ type: 'progress', id: id, frac: frac, msg: m });
-  });
+  p.shouldStop = function () { return cancelled.has(id); };
+
+  var res;
+  try {
+    res = await Router.plan(G, p, function (frac, m) {
+      send({ type: 'progress', id: id, frac: frac, msg: m });
+    });
+  } catch (err) {
+    cancelled.delete(id);
+    if (err && err.cancelled) { send({ type: 'cancelled', id: id }); return; }
+    send({ type: 'error', id: id, message: (err && err.message) || String(err) });
+    return;
+  }
+  cancelled.delete(id);
 
   var transfer = [];
   for (var k = 0; k < res.routes.length; k++) {
@@ -103,7 +131,8 @@ async function plan(msg) {
   send({
     type: 'planned', id: id, routes: res.routes, reason: res.reason,
     relaxed: res.relaxed, all: res.all,
-    start: [G.lats[src], G.lons[src]],
-    end: p.dst !== undefined && p.dst >= 0 ? [G.lats[p.dst], G.lons[p.dst]] : null
+    start: [G.lats[p.src], G.lons[p.src]], snapStart: start.dist,
+    end: p.dst !== undefined && p.dst >= 0 ? [G.lats[p.dst], G.lons[p.dst]] : null,
+    snapEnd: end ? end.dist : null
   }, transfer);
 }

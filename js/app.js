@@ -17,6 +17,7 @@
     routes: [],
     current: 0,
     busy: false,
+    job: null,            // AbortController du calcul en cours, pour « Annuler »
     zone: null,           // {lat, lon, radius} de la zone chargée dans le moteur
     pois: [],
     weather: null,
@@ -25,10 +26,62 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
-  /* ================= moteur (worker, avec repli dans la page) ================= */
+  /* ================= moteur (worker, avec repli dans la page) =================
+
+     Trois manques dont l'absence se payait cher :
+
+     · un worker qui meurt ne laissait aucune promesse se résoudre — l'interface
+       restait bloquée sur « Calcul en cours… » jusqu'au rechargement ;
+     · le « repli dans la page » n'en était pas un : le graphe vivait dans le
+       worker, donc si celui-ci tombait *après* la construction, le repli
+       travaillait sur un graphe absent et jetait à son tour ;
+     · rien ne permettait de renoncer à un calcul commencé.
+
+     D'où : toute promesse en attente est rejetée si le moteur disparaît, la
+     page garde une copie compacte du graphe pour pouvoir reprendre seule, et
+     chaque appel est annulable. */
 
   var engine = (function () {
-    var worker = null, pending = new Map(), seq = 0;
+    var worker = null;        // null = pas encore créé · false = définitivement perdu
+    var pending = new Map(), seq = 0;
+    var lastBlob = null;      // dernière copie compacte du graphe, côté page
+    var hasGraph = false;     // le worker *courant* la détient-il ?
+    var watchdog = null;
+
+    /* Un calcul qui ne donne plus signe de vie pendant ce délai est tenu pour
+       perdu. Le worker parle à chaque progression — construction, puis tous les
+       trois candidats — donc un silence de deux minutes ne peut pas être un
+       calcul simplement long. */
+    var SILENCE = 120000;
+
+    function cancelError() {
+      var e = new Error('calcul annulé');
+      e.cancelled = true;
+      return e;
+    }
+
+    function rejectAll(err) {
+      var waiting = Array.from(pending.values());
+      pending.clear();
+      waiting.forEach(function (p) { p.reject(err); });
+    }
+
+    /* Le worker est hors jeu : on rend la main à tout le monde. Les appels
+       suivants repartiront sur un worker neuf, ou dans la page s'il est
+       définitivement hors d'atteinte. */
+    function loseWorker(message, permanent) {
+      if (worker && worker.terminate) { try { worker.terminate(); } catch (e) { } }
+      worker = permanent ? false : null;
+      hasGraph = false;
+      rejectAll(new Error(message));
+    }
+
+    function sweep() {
+      if (!pending.size) { clearInterval(watchdog); watchdog = null; return; }
+      var now = Date.now(), stuck = false;
+      pending.forEach(function (p) { if (now - p.last > SILENCE) stuck = true; });
+      if (stuck) loseWorker('le moteur de calcul ne répond plus — réessayez.');
+    }
 
     function boot() {
       if (worker !== null) return worker;
@@ -37,14 +90,20 @@
         worker.onmessage = function (ev) {
           var m = ev.data, p = pending.get(m.id);
           if (!p) return;
+          p.last = Date.now();
           if (m.type === 'progress') { p.onProgress && p.onProgress(m.frac, m.msg); return; }
           pending.delete(m.id);
-          if (m.type === 'error') p.reject(new Error(m.message));
-          else p.resolve(m);
+          if (m.type === 'cancelled') { p.reject(cancelError()); return; }
+          if (m.type === 'error') { p.reject(new Error(m.message)); return; }
+          p.resolve(m);
         };
+        /* Un worker qui tombe emporte le graphe qu'il détenait. */
         worker.onerror = function (e) {
           console.warn('worker indisponible, repli dans la page :', e.message);
-          worker = false;
+          loseWorker('moteur de calcul interrompu — relancez le calcul.', true);
+        };
+        worker.onmessageerror = function () {
+          loseWorker('message illisible entre la page et le moteur.', true);
         };
       } catch (e) {
         console.warn('worker impossible, repli dans la page :', e);
@@ -53,18 +112,71 @@
       return worker;
     }
 
-    function call(type, payload, onProgress) {
+    function post(type, payload, onProgress) {
       var w = boot();
       if (!w) return inline(type, payload, onProgress);
       return new Promise(function (resolve, reject) {
         var id = ++seq;
-        pending.set(id, { resolve: resolve, reject: reject, onProgress: onProgress });
-        w.postMessage(Object.assign({ type: type, id: id }, payload));
+        pending.set(id, {
+          resolve: resolve, reject: reject, onProgress: onProgress, last: Date.now()
+        });
+        if (!watchdog) watchdog = setInterval(sweep, 5000);
+        try {
+          w.postMessage(Object.assign({ type: type, id: id }, payload));
+        } catch (err) {
+          pending.delete(id);
+          reject(err);
+        }
       });
     }
 
-    /* Repli : les mêmes modules sont déjà chargés dans la page. */
+    /* Le worker a pu être remplacé depuis la construction du graphe : on le
+       recharge depuis la copie gardée ici, sans repasser par le réseau. */
+    function reloadIfNeeded() {
+      if (hasGraph || !lastBlob || worker === false) return Promise.resolve();
+      return post('load', { blob: lastBlob }).then(function () { hasGraph = true; });
+    }
+
+    function call(type, payload, onProgress) {
+      if (type === 'build' || type === 'load') {
+        return post(type, payload, onProgress).then(function (r) {
+          if (type === 'build' && r.blob) lastBlob = r.blob;
+          if (type === 'load' && payload.blob) lastBlob = payload.blob;
+          hasGraph = true;
+          return r;
+        });
+      }
+      if (type === 'plan') {
+        return reloadIfNeeded().then(function () { return post(type, payload, onProgress); });
+      }
+      return post(type, payload, onProgress);
+    }
+
+    /* Renoncer : le worker cesse vraiment de calculer, et les promesses en
+       attente se dénouent au lieu de rester suspendues. */
+    var inlineStop = false;
+
+    function cancelAll() {
+      inlineStop = true;                 // arrête aussi un calcul mené dans la page
+      if (!pending.size) return;
+      var ids = Array.from(pending.keys());
+      if (worker) {
+        ids.forEach(function (id) {
+          try { worker.postMessage({ type: 'cancel', target: id }); } catch (e) { }
+        });
+      }
+      rejectAll(cancelError());
+    }
+
+    /* Repli : les mêmes modules sont déjà chargés dans la page. Le graphe s'y
+       reconstruit depuis la copie compacte, ce qui rend le repli utilisable
+       même quand le worker meurt en cours de route. */
     var G = null;
+    function pageGraph() {
+      if (!G && lastBlob) G = RGraph.deserialize(lastBlob);
+      return G;
+    }
+
     function inline(type, msg, onProgress) {
       return Promise.resolve().then(function () {
         if (type === 'build') {
@@ -73,32 +185,46 @@
           if (G.n < 20) throw new Error('Zone trop pauvre en chemins cartographiés.');
           if (msg.tiles && msg.tiles.length) RGraph.attachElevation(G, msg.tiles);
           RGraph.attachWater(G, msg.pois || []);
-          return { n: G.n, m: G.m, hasEle: G.hasEle, waterCount: G.waterCount, blob: RGraph.serialize(G) };
+          lastBlob = RGraph.serialize(G);
+          return { n: G.n, m: G.m, hasEle: G.hasEle, waterCount: G.waterCount, blob: lastBlob };
         }
         if (type === 'load') {
+          lastBlob = msg.blob;
           G = RGraph.deserialize(msg.blob);
           return { n: G.n, m: G.m, hasEle: G.hasEle, waterCount: G.waterCount };
         }
         if (type === 'plan') {
+          var g = pageGraph();
+          if (!g) throw new Error('Graphe absent : relancez le calcul pour retélécharger la zone.');
           var hist = null;
           if (msg.history && msg.history.length) {
             hist = new Map();
             msg.history.forEach(function (h) { hist.set(h[0], h[1]); });
           }
-          RGraph.weight(G, Object.assign({}, msg.weights, { history: hist }));
+          RGraph.weight(g, Object.assign({}, msg.weights, { history: hist }));
           var p = msg.p;
-          p.src = RGraph.nearest(G, p.startLat, p.startLon);
-          if (p.src < 0) throw new Error('Aucun chemin trouvé près du départ.');
-          if (p.mode === 'p2p' && p.endLat != null) p.dst = RGraph.nearest(G, p.endLat, p.endLon);
-          return Router.plan(G, p, onProgress).then(function (res) {
-            return { routes: res.routes, reason: res.reason, relaxed: res.relaxed, all: res.all };
+          var snapA = RGraph.nearest(g, p.startLat, p.startLon);
+          if (snapA.node < 0) throw new Error('Aucun chemin trouvé près du départ.');
+          p.src = snapA.node;
+          var snapB = null;
+          if (p.mode === 'p2p' && p.endLat != null) {
+            snapB = RGraph.nearest(g, p.endLat, p.endLon);
+            p.dst = snapB.node;
+          }
+          inlineStop = false;
+          p.shouldStop = function () { return inlineStop; };
+          return Router.plan(g, p, onProgress).then(function (res) {
+            return {
+              routes: res.routes, reason: res.reason, relaxed: res.relaxed, all: res.all,
+              snapStart: snapA.dist, snapEnd: snapB ? snapB.dist : null
+            };
           });
         }
         return {};
       });
     }
 
-    return { call: call };
+    return { call: call, cancelAll: cancelAll, cancelError: cancelError };
   })();
 
   /* ================= carte ================= */
@@ -590,7 +716,24 @@
     return Geo.haversine(z.lat, z.lon, lat, lon) <= Math.max(250, z.radius - needed);
   }
 
-  async function ensureGraph(needed) {
+  /* Un « Annuler » doit interrompre ce qui est réellement en cours : Overpass
+     et les tuiles de relief par leur `signal`, le moteur par son propre canal.
+     Sans cela, renoncer ne faisait que masquer un travail qui continuait. */
+  function abortedError() {
+    var e = new Error('calcul annulé');
+    e.cancelled = true;
+    return e;
+  }
+
+  function throwIfAborted(signal) {
+    if (signal && signal.aborted) throw abortedError();
+  }
+
+  function isCancelled(err) {
+    return !!err && (err.cancelled || err.name === 'AbortError');
+  }
+
+  async function ensureGraph(needed, signal) {
     var lat = state.start.lat, lon = state.start.lon;
 
     /* 1. zone déjà chargée dans le moteur */
@@ -613,12 +756,14 @@
     }
     var data = await Overpass.fetchArea(lat, lon, needed, function (m) {
       status(m + ' — 10 à 60 s selon la charge du serveur', .2);
-    });
+    }, signal);
+    throwIfAborted(signal);
 
     status('Relief : téléchargement des tuiles d\'altitude…', .38);
     var tiles = await Elevation.load(lat, lon, needed, function (f) {
       status('Relief : tuiles d\'altitude ' + Math.round(f * 100) + ' %', .38 + .1 * f);
-    }).catch(function () { return []; });
+    }, signal).catch(function () { return []; });
+    throwIfAborted(signal);
 
     var res = await engine.call('build',
       { net: data.network, green: data.green, pois: data.pois, tiles: tiles },
@@ -660,13 +805,15 @@
 
     state.busy = true;
     state.shared = null;
+    state.job = new AbortController();
     $('btnGo').disabled = true;
     $('btnGo').textContent = 'Calcul en cours…';
+    $('btnCancel').hidden = false;
     startTimer();
 
     try {
       var needed = neededRadius(cfg.p);
-      await ensureGraph(needed);
+      await ensureGraph(needed, state.job.signal);
 
       var history = cfg.freshDays ? Store.historyWeights(cfg.freshDays) : [];
       var res = await engine.call('plan',
@@ -691,19 +838,48 @@
       statusOff();
       writeHash(false);
       $('results').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      /* Ce que l'utilisateur doit savoir avant de partir : la cible n'a pas pu
+         être tenue, ou son départ n'est pas tout à fait celui qu'il a posé. */
+      var notes = [];
       if (res.relaxed) {
-        status('Distance approchée : le réseau local ne permet pas de coller exactement à la cible.', 1);
+        notes.push('distance approchée : le réseau local ne permet pas de coller exactement à la cible');
       }
+      if (res.snapStart > SNAP_WARN) {
+        notes.push('le départ a été ramené à ' + Math.round(res.snapStart) +
+          ' m de là, sur le chemin cartographié le plus proche');
+      }
+      if (res.snapEnd > SNAP_WARN) {
+        notes.push('l\'arrivée a été ramenée à ' + Math.round(res.snapEnd) + ' m de là');
+      }
+      if (notes.length) status(notes.join(' · ') + '.', 1);
     } catch (err) {
-      console.error(err);
-      status('Erreur : ' + (err && err.message ? err.message : err), 0, true);
+      if (isCancelled(err)) {
+        status('Calcul annulé.', 0);
+        setTimeout(function () { if (!state.busy) statusOff(); }, 2500);
+      } else {
+        console.error(err);
+        status('Erreur : ' + (err && err.message ? err.message : err), 0, true);
+      }
     } finally {
       state.busy = false;
+      state.job = null;
       $('btnGo').disabled = false;
       $('btnGo').textContent = 'Générer le parcours';
+      $('btnCancel').hidden = true;
       stopTimer();
     }
   }
+
+  /* Au-delà, l'écart entre le point posé et le réseau se voit sur le terrain. */
+  var SNAP_WARN = 150;
+
+  function cancelRun() {
+    if (state.job) state.job.abort();
+    engine.cancelAll();
+  }
+
+  $('btnCancel').addEventListener('click', cancelRun);
 
   /* ================= rendu ================= */
 
@@ -994,7 +1170,7 @@
     var r = currentRoute();
     if (!r) return;
     var pts = ptsOf(r);
-    var cells = Geo.cellsAlong(pts, 15);
+    var cells = Geo.cellsAlong(pts);
     Store.addRun(cells, r.stats.total / 1000, '');
     this.textContent = '✓ Enregistré';
     var b = this;
@@ -1225,7 +1401,7 @@
   $('btnLiveSave').addEventListener('click', function () {
     var s = Tracker.snapshot();
     if (s.pts.length < 2) return;
-    Store.addRun(Geo.cellsAlong(s.pts, 15), s.dist / 1000, 'Sortie enregistrée');
+    Store.addRun(Geo.cellsAlong(s.pts), s.dist / 1000, 'Sortie enregistrée');
     this.textContent = '✓ Enregistré';
     var b = this;
     setTimeout(function () { b.textContent = '✓ Ajouter à l\'historique'; }, 2500);
@@ -1271,6 +1447,8 @@
     var btn = this;
     btn.disabled = true;
     state.busy = true;
+    state.job = new AbortController();
+    $('btnCancel').hidden = false;
     startTimer();
     try {
       var cfg = params();
@@ -1278,14 +1456,17 @@
       var idx = RADIUS_STEPS.indexOf(neededRadius(cfg.p));
       var needed = RADIUS_STEPS[Math.min(RADIUS_STEPS.length - 1, idx + 1)];
       state.zone = null;
-      await ensureGraph(needed);
+      await ensureGraph(needed, state.job.signal);
       status('Zone gardée hors ligne ✓', 1);
       renderZones();
     } catch (err) {
-      status('Téléchargement impossible : ' + (err.message || err), 0, true);
+      if (isCancelled(err)) status('Téléchargement annulé.', 0);
+      else status('Téléchargement impossible : ' + (err.message || err), 0, true);
     } finally {
       btn.disabled = false;
       state.busy = false;
+      state.job = null;
+      $('btnCancel').hidden = true;
       stopTimer();
     }
   });

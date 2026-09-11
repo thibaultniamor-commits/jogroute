@@ -1,0 +1,10 @@
+{
+  "name": "jogroute",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Générateur de parcours de jogging — application web sans serveur. Ce fichier ne sert qu'aux tests : l'application elle-même n'a aucune dépendance et se sert telle quelle.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

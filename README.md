@@ -163,9 +163,19 @@ grimpe tout seul, et en courant le bruit ajoute 15 à 20 % à chaque segment de
    un rayon d'environ une précision GPS (au moins 8 m) autour du dernier point
    validé ; au-delà, la corde entière est ajoutée et l'ancre s'y déplace.
 
-À l'arrêt le compteur est donc rigoureusement figé, et en mouvement la distance
-est mesurée par cordes d'une dizaine de mètres, bien moins sensibles au bruit.
-Les sauts (plus de 12 m/s entre deux points bruts) sont ignorés.
+En mouvement, la distance est donc mesurée par cordes d'une dizaine de mètres,
+bien moins sensibles au bruit. À l'arrêt, le compteur est figé tant que le
+signal est bon ; avec une précision annoncée de ±8 m il dérive encore de
+quelques centaines de mètres par heure de station debout — le rayon d'ancre ne
+vaut qu'environ 3,5 écarts-types de la position lissée, et un franchissement
+finit par arriver. L'élargir figerait l'arrêt mais sous-estimerait les trajets
+sinueux : l'arbitrage reste à trancher (voir le test marqué `todo`).
+
+Les **sauts de position** sont ignorés : au-delà de ce que la vitesse maximale
+d'un coureur *et* le bruit annoncé peuvent expliquer ensemble. Ne regarder que
+la vitesse ne suffit pas — deux points bruts consécutifs d'un GPS à ±8 m
+diffèrent couramment de 15 à 20 m sans que personne n'ait bougé, et prendre cela
+pour une téléportation coupait la distance de moitié.
 
 **Pas.** La magnitude de l'accélération oscille autour de *g* d'environ ±2 m/s²
 à la marche et ±6 m/s² en courant. On la lisse légèrement puis on compte une
@@ -174,9 +184,11 @@ il s'adapte donc tout seul à l'allure et à la façon de porter le téléphone
 (main, poche, brassard). Un intervalle minimal de 250 ms évite les rebonds, et
 une amplitude minimale évite de compter les vibrations d'un appareil posé.
 
-Sur un banc d'essai simulant marche, course et sprint, le comptage tombe juste
-au pas près ; la distance se tient à ±3 % sur une boucle de 2 km, y compris avec
-un GPS dégradé à ±25 m ne donnant qu'un point toutes les 5 secondes.
+Sur le banc d'essai (`test/metrics.test.js`, lancé par `npm test`), le comptage
+des pas tombe au pas près en marche, en course et en sprint, et reste juste
+quand l'allure change en cours de route ; la distance se tient à ±3 % sur 2 km,
+et à ±5 % avec un GPS dégradé à ±25 m ne donnant qu'un point toutes les
+5 secondes.
 
 ## Hors ligne
 
@@ -205,13 +217,41 @@ un GPS dégradé à ±25 m ne donnant qu'un point toutes les 5 secondes.
 | `js/router.js` | tas binaire, Dijkstra borné, recherche et notation des tracés |
 | `js/worker.js` | héberge le moteur hors du thread principal |
 | `js/share.js` | lien JogRoute, lien Google Maps, QR code |
-| `js/tracker.js` | suivi en direct : distance GPS filtrée, podomètre, sortie en cours |
+| `js/metrics.js` | podomètre et filtre de distance GPS, sans dépendance au navigateur |
+| `js/tracker.js` | suivi en direct : capteurs, cumuls, pause, gels, reprise |
 | `js/app.js` | carte Leaflet, interface, rendu, profil, export |
 | `sw.js`, `manifest.webmanifest` | installation et fonctionnement hors ligne |
+| `test/` | banc d'essai (voir plus bas) |
 | `vendor/` | Leaflet et qrcode-generator, embarqués (aucun CDN) |
 
 Console du navigateur : `JogRoute.state`, `JogRoute.run()`,
 `JogRoute.setStart(lat, lon, true)`.
+
+## Tests
+
+```
+npm test
+```
+
+Aucune dépendance à installer : le banc d'essai n'utilise que le lanceur intégré
+de Node (≥ 18). Les modules de l'application y sont chargés **tels quels**, dans
+un contexte où `self` existe — il n'y a donc pas de « version pour les tests »
+qui pourrait diverger de ce qui part en production.
+
+| Fichier | Ce qu'il vérifie |
+|---|---|
+| `test/geo.test.js` | distances, caps, compacité, allure/pente, polyline, couverture de l'historique |
+| `test/metrics.test.js` | comptage des pas et mesure de distance sur signaux synthétiques |
+| `test/router.test.js` | graphe, accrochage au réseau, Dijkstra, statistiques, planification |
+| `test/harness.js` | chargement des modules, générateurs semés, quartier synthétique |
+| `test/bench.js` | coût d'une génération (`node test/bench.js`, hors suite) |
+
+Tout l'aléatoire sort d'un générateur semé : un échec est reproductible. Le bruit
+GPS est modélisé par un processus autocorrélé, comme l'est l'erreur réelle d'un
+récepteur ; le cas du bruit blanc est conservé à part, comme borne pessimiste.
+
+Un test est marqué `todo` : il décrit la dérive résiduelle du compteur à l'arrêt,
+qui relève d'un réglage à trancher et non d'un correctif (voir plus haut).
 
 ## Limites connues
 

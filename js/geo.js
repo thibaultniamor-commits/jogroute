@@ -181,24 +181,53 @@
     return Math.round(lat * CELL_SCALE) + ',' + Math.round(lon * CELL_SCALE);
   }
 
-  /* Toutes les cellules traversées par une polyligne, échantillonnée tous les
-     `stepM` mètres. Écriture et lecture de l'historique doivent utiliser le
-     même échantillonnage, sinon les tronçons longs passent entre les mailles. */
-  function cellsAlong(pts, stepM) {
-    var step = stepM || 15, out = [], seen = Object.create(null);
-    function add(lat, lon) {
-      var k = cellKey(lat, lon);
+  /* Toutes les cellules traversées par une polyligne.
+
+     Échantillonner le segment tous les quinze mètres paraissait suffisant — une
+     cellule en fait vingt-cinq à trente-sept — mais laissait échapper les
+     coins : quand la trace passe d'une cellule à sa voisine *en diagonale*, elle
+     traverse brièvement deux autres cellules qu'aucun échantillon ne visitait.
+     Sur une rue orientée à 45°, 6 % du trajet restait ainsi invisible à
+     l'anti-répétition, et le générateur reproposait des rues fraîchement
+     courues. On parcourt donc la grille elle-même (Amanatides & Woo) : chaque
+     cellule effectivement traversée est émise, aucune autre, et la question de
+     la finesse d'échantillonnage ne se pose plus. */
+  function cellsAlong(pts) {
+    var out = [], seen = Object.create(null);
+    function add(iu, iv) {
+      var k = iu + ',' + iv;
       if (!seen[k]) { seen[k] = 1; out.push(k); }
     }
     if (!pts.length) return out;
-    add(pts[0][0], pts[0][1]);
+
+    /* Repère « cellules » : le +0,5 fait coïncider floor() ici avec le round()
+       de cellKey(), pour que les deux bouts de l'historique parlent de la même
+       grille — y compris aux latitudes et longitudes négatives. */
+    function u(lat) { return lat * CELL_SCALE + 0.5; }
+
+    add(Math.floor(u(pts[0][0])), Math.floor(u(pts[0][1])));
+
     for (var i = 1; i < pts.length; i++) {
-      var a = pts[i - 1], b = pts[i];
-      var d = haversine(a[0], a[1], b[0], b[1]);
-      var steps = Math.max(1, Math.ceil(d / step));
-      for (var s = 1; s <= steps; s++) {
-        var t = s / steps;
-        add(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+      var u0 = u(pts[i - 1][0]), v0 = u(pts[i - 1][1]);
+      var u1 = u(pts[i][0]), v1 = u(pts[i][1]);
+      var iu = Math.floor(u0), iv = Math.floor(v0);
+      var eu = Math.floor(u1), ev = Math.floor(v1);
+      var du = u1 - u0, dv = v1 - v0;
+      var su = du > 0 ? 1 : -1, sv = dv > 0 ? 1 : -1;
+
+      /* Distance (en fraction du segment) jusqu'à la prochaine frontière, puis
+         d'une frontière à la suivante, sur chacun des deux axes. */
+      var tU = du !== 0 ? (du > 0 ? iu + 1 - u0 : u0 - iu) / Math.abs(du) : Infinity;
+      var tV = dv !== 0 ? (dv > 0 ? iv + 1 - v0 : v0 - iv) / Math.abs(dv) : Infinity;
+      var stepU = du !== 0 ? 1 / Math.abs(du) : Infinity;
+      var stepV = dv !== 0 ? 1 / Math.abs(dv) : Infinity;
+
+      add(iu, iv);
+      var guard = 0;
+      while ((iu !== eu || iv !== ev) && guard++ < 100000) {
+        if (tU < tV) { iu += su; tU += stepU; }
+        else { iv += sv; tV += stepV; }
+        add(iu, iv);
       }
     }
     return out;
