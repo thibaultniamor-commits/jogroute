@@ -15,6 +15,10 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` doit l'emporter : plusieurs blocs masqués portent une classe qui
+   impose display:grid/flex, laquelle battrait la feuille de style du navigateur. */
+[hidden] { display: none !important; }
+
 html, body {
   height: 100%;
   margin: 0;
@@ -227,7 +231,7 @@ button.ghost { font-size: 12px; padding: 6px 8px; color: var(--muted); }
 .variant .s { font-size: 11.5px; color: var(--muted); }
 
 /* ---------- carte ---------- */
-#map { flex: 1; height: 100%; background: #0d1116; }
+#map { flex: 1; height: 100%; background: #0d1116; position: relative; }
 .leaflet-container { font: inherit; background: #0d1116; }
 
 .km-badge {
@@ -407,6 +411,93 @@ button.primary-soft:hover { background: #23492f; }
   text-align: left;
 }
 
+/* ---------- suivi en direct ---------- */
+#liveBox .kpis { margin-bottom: 8px; }
+#liveBox.on { background: #17251e; }
+#liveBox.on h2 { color: var(--accent); }
+#liveBox.on .kpi b { color: var(--accent); }
+#liveBox.paused .kpi b { color: var(--warn); }
+
+.bar.goal {
+  height: 6px;
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.bar.goal i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent-2);
+  transition: width .4s;
+}
+
+/* compteur par-dessus la carte, lisible en courant */
+#livehud {
+  position: absolute;
+  left: 56px;            /* à droite des boutons de zoom de Leaflet */
+  top: 10px;
+  z-index: 800;          /* au-dessus des marqueurs Leaflet (600) */
+  max-width: calc(100% - 110px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  background: rgba(18, 22, 28, .9);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  backdrop-filter: blur(3px);
+}
+#livehud.paused { border-color: var(--warn); opacity: .8; }
+#livehud div { text-align: center; }
+#livehud b {
+  display: block;
+  font-size: 22px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+#livehud span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+/* Écran noir : l'écran reste techniquement allumé (donc GPS et accéléromètre
+   continuent), mais n'affiche presque rien — sur dalle OLED, presque pas de
+   courant, et le téléphone peut rester en poche sans appuis intempestifs. */
+#blackout {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.bo-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 26px 40px;
+  text-align: center;
+}
+.bo-grid b {
+  display: block;
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 600;
+  color: #2f4a3a;                 /* juste lisible dans le noir, presque rien à allumer */
+  font-variant-numeric: tabular-nums;
+}
+.bo-grid span { font-size: 11px; color: #23302a; text-transform: uppercase; letter-spacing: 1px; }
+.bo-hint { font-size: 11px; color: #1e2723; margin: 0; }
+
+.live-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent-2);
+  border: 2px solid #06182b;
+  box-shadow: 0 0 0 3px rgba(78, 168, 255, .35);
+}
+
 /* marqueurs carte */
 .poi-dot {
   width: 9px; height: 9px; border-radius: 50%;
@@ -419,6 +510,8 @@ a { color: var(--accent-2); }
 
 @media (max-width: 780px) {
   #side { max-height: 58%; }
+  #livehud { gap: 4px 10px; padding: 6px 9px; }
+  #livehud b { font-size: 18px; }
   .btn-grid { grid-template-columns: 1fr 1fr; }
   .kpis { flex-wrap: wrap; }
   .kpi { min-width: calc(50% - 4px); }

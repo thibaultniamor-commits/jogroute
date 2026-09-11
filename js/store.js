@@ -199,6 +199,22 @@
     return Array.from(best.entries());
   }
 
+  /* ---- sortie en cours (suivi en direct) ----
+     Recopiée régulièrement pour survivre à un rechargement ; au-delà de
+     LIVE_TTL on considère que la sortie a été oubliée, pas interrompue. */
+
+  var LIVE_TTL = 10 * 3600e3;
+
+  function liveSession() {
+    var s = lsGet('live', null);
+    if (!s || !s.savedAt || Date.now() - s.savedAt > LIVE_TTL) return null;
+    return s;
+  }
+  function saveLive(s) { lsSet('live', s); }
+  function clearLive() {
+    try { localStorage.removeItem('jogroute.live'); } catch (e) { }
+  }
+
   function settings() { return lsGet('settings', {}); }
   function saveSettings(s) { lsSet('settings', s); }
 
@@ -214,6 +230,7 @@
     getTile: getTile, putTile: putTile,
     favorites: favorites, addFavorite: addFavorite, removeFavorite: removeFavorite,
     runs: runs, addRun: addRun, clearRuns: clearRuns, historyWeights: historyWeights,
+    liveSession: liveSession, saveLive: saveLive, clearLive: clearLive,
     settings: settings, saveSettings: saveSettings, usage: usage
   };
 })(window);

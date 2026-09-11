@@ -1010,32 +1010,259 @@
 
   /* ================= export GPX ================= */
 
-  function buildGpx(r) {
-    var km = (r.stats.total / 1000).toFixed(2);
-    var pts = ptsOf(r);
+  /* `opt.ele` : altitudes par point · `opt.times` : horodatages (ms) par point,
+     que les montres et Strava utilisent pour recalculer l'allure réelle. */
+  function gpxDoc(name, pts, opt) {
+    opt = opt || {};
     var NL = '\n';
     var body = pts.map(function (p, i) {
-      var e = r.hasEle && r.ele ? '<ele>' + r.ele[i].toFixed(1) + '</ele>' : '';
-      return '   <trkpt lat="' + p[0].toFixed(7) + '" lon="' + p[1].toFixed(7) + '">' + e + '</trkpt>';
+      var e = opt.ele ? '<ele>' + opt.ele[i].toFixed(1) + '</ele>' : '';
+      var t = opt.times ? '<time>' + new Date(opt.times[i]).toISOString() + '</time>' : '';
+      return '   <trkpt lat="' + p[0].toFixed(7) + '" lon="' + p[1].toFixed(7) + '">' + e + t + '</trkpt>';
     }).join(NL);
     return '<?xml version="1.0" encoding="UTF-8"?>' + NL +
       '<gpx version="1.1" creator="JogRoute" xmlns="http://www.topografix.com/GPX/1/1">' + NL +
-      ' <metadata><name>Jogging ' + km + ' km</name><time>' +
-      new Date().toISOString() + '</time></metadata>' + NL +
-      ' <trk><name>Jogging ' + km + ' km</name><trkseg>' + NL +
+      ' <metadata><name>' + name + '</name><time>' +
+      new Date(opt.start || Date.now()).toISOString() + '</time></metadata>' + NL +
+      ' <trk><name>' + name + '</name><trkseg>' + NL +
       body + NL + ' </trkseg></trk>' + NL + '</gpx>' + NL;
+  }
+
+  function buildGpx(r) {
+    var km = (r.stats.total / 1000).toFixed(2);
+    return gpxDoc('Jogging ' + km + ' km', ptsOf(r),
+      { ele: r.hasEle && r.ele ? r.ele : null });
+  }
+
+  function download(filename, mime, text) {
+    var url = URL.createObjectURL(new Blob([text], { type: mime }));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
   $('btnGpx').addEventListener('click', function () {
     var r = currentRoute();
     if (!r) return;
-    var url = URL.createObjectURL(new Blob([buildGpx(r)], { type: 'application/gpx+xml' }));
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'jogging-' + (r.stats.total / 1000).toFixed(1).replace('.', '_') + 'km.gpx';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    download('jogging-' + (r.stats.total / 1000).toFixed(1).replace('.', '_') + 'km.gpx',
+      'application/gpx+xml', buildGpx(r));
   });
+
+  /* ================= suivi en direct : distance & pas =================
+     Le moteur vit dans js/tracker.js ; ici on ne fait qu'afficher et piloter. */
+
+  var liveLayer = L.layerGroup().addTo(map);
+  var liveLine = null, liveDot = null, liveFollow = true;
+
+  function fmtClock(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0');
+  }
+
+  function fmtPace(secPerKm) {
+    if (!secPerKm || !isFinite(secPerKm) || secPerKm > 1800) return '—';
+    var m = Math.floor(secPerKm / 60), s = Math.round(secPerKm % 60);
+    if (s === 60) { m++; s = 0; }
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function fmtKm(m) { return (m / 1000).toFixed(2).replace('.', ','); }
+
+  /* 12 345 — espace insécable fine, plus lisible en courant */
+  function group(n) {
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+
+  function liveInfoText(s) {
+    /* Un trou de mesure se dit, il ne se devine pas : la distance parcourue
+       pendant que le téléphone dormait n'a pas été comptée. */
+    var gap = s.frozen > 20
+      ? ' <b>⚠ ' + fmtClock(s.frozen) + ' non mesurées</b> (téléphone en veille) : ' +
+        'la distance parcourue pendant ce temps manque.'
+      : '';
+
+    if (s.error) return s.error + gap;
+    /* Le bilan passe avant tout le reste : une sortie retrouvée puis terminée
+       sans être reprise ne doit pas continuer à s'annoncer « interrompue ». */
+    if (s.done) {
+      return 'Sortie terminée : ' + fmtKm(s.dist) + ' km en ' + fmtClock(s.seconds) +
+        ' · ' + group(s.steps) + ' pas' + (s.estimated ? ' (estimés)' : '') + '.' + gap;
+    }
+    if (gap) return gap.replace(/^ /, '');
+    if (s.restored) return 'Sortie interrompue retrouvée (rechargement de la page) : ' +
+      'reprenez-la ou terminez-la.';
+    if (!s.active) {
+      return 'Compte la distance réelle (GPS) et les pas (accéléromètre), sans rien ' +
+        'envoyer nulle part. Gardez l\'écran allumé et l\'app au premier plan.';
+    }
+    if (s.paused) return 'En pause — ni la distance ni les pas ne sont comptés.';
+    if (s.estimated && s.sensing) return 'Détection des pas en cours…';
+    if (s.estimated) {
+      return 'Pas <b>estimés</b> d\'après la distance et la vitesse : ce navigateur ne ' +
+        'donne pas accès à l\'accéléromètre (ordinateur, ou permission refusée).';
+    }
+    return 'Pas comptés par l\'accéléromètre. Le téléphone peut rester en poche ou au brassard.';
+  }
+
+  function renderLive(s) {
+    var live = s.active || s.done;
+
+    $('lDist').textContent = fmtKm(s.dist) + ' km';
+    $('lSteps').textContent = (s.estimated && s.steps ? '≈ ' : '') + group(s.steps);
+    $('lTime').textContent = fmtClock(s.seconds);
+    $('lPace').textContent = fmtPace(s.pace) + (s.pace ? ' /km' : '');
+
+    $('hDist').textContent = fmtKm(s.dist);
+    $('hSteps').textContent = group(s.steps);
+    $('hTime').textContent = fmtClock(s.seconds);
+    $('hPace').textContent = fmtPace(s.pace);
+
+    $('livehud').hidden = !s.active;
+    $('livehud').className = s.paused ? 'paused' : '';
+    $('liveBox').className = 'section' + (s.active ? (s.paused ? ' paused' : ' on') : '');
+
+    $('btnLiveStart').hidden = s.active;
+    $('btnLiveStart').textContent = s.done ? '▶ Nouvelle sortie' : '▶ Démarrer la sortie';
+    $('btnLivePause').hidden = !s.active;
+    $('btnLivePause').textContent = s.paused ? '▶ Reprendre' : '⏸ Pause';
+    $('btnLiveStop').hidden = !s.active;
+    $('btnBlackRow').hidden = !(s.active && !s.paused);
+
+    $('boDist').textContent = fmtKm(s.dist);
+    $('boSteps').textContent = group(s.steps);
+    $('boTime').textContent = fmtClock(s.seconds);
+    $('boPace').textContent = fmtPace(s.pace);
+    if (!s.active && !$('blackout').hidden) $('blackout').hidden = true;
+    $('liveDone').hidden = !(s.done && s.dist > 0);
+    $('liveMetrics').hidden = !live;
+
+    /* Sans capteur, cadence et foulée se déduiraient des pas… eux-mêmes déduits
+       de la distance : ce serait afficher l'hypothèse comme une mesure. */
+    $('lCad').textContent = !s.estimated && s.cadence ? s.cadence + ' pas/min' : '—';
+    $('lStride').textContent = !s.estimated && s.stride
+      ? s.stride.toFixed(2).replace('.', ',') + ' m' : '—';
+    $('lSpeed').textContent = s.speed ? (s.speed * 3.6).toFixed(1).replace('.', ',') + ' km/h' : '—';
+    $('lAcc').textContent = s.acc ? '± ' + Math.round(s.acc) + ' m' : '—';
+
+    /* Dire si la protection « écran éteint » est réellement armée : un refus
+       silencieux du navigateur laisserait croire à une sécurité inexistante. */
+    $('lBgRow').hidden = !s.background;
+    $('lBg').textContent = !s.active ? '—'
+      : (s.backgroundOk ? 'son de veille actif' : 'refusée par le navigateur');
+
+    /* Avancement sur le parcours affiché, s'il y en a un. */
+    var r = currentRoute();
+    var goal = r && live ? r.stats.total : 0;
+    $('liveGoal').hidden = !goal;
+    if (goal) {
+      var f = Math.min(1, s.dist / goal);
+      $('liveGoalBar').style.width = Math.round(f * 100) + '%';
+      $('liveGoalLabel').textContent = 'Avancement sur le parcours — ' +
+        Math.round(f * 100) + ' % · reste ' + fmtKm(Math.max(0, goal - s.dist)) + ' km';
+    }
+
+    $('liveInfo').innerHTML = liveInfoText(s);
+    drawLive(s);
+  }
+
+  function drawLive(s) {
+    if (!s.pts.length || (!s.active && !s.done)) {
+      liveLayer.clearLayers();
+      liveLine = liveDot = null;
+      return;
+    }
+    if (!liveLine) {
+      liveLine = L.polyline(s.pts, {
+        color: '#4ea8ff', weight: 4, opacity: .9, lineJoin: 'round', lineCap: 'round'
+      }).addTo(liveLayer);
+      liveDot = L.marker(s.pts[s.pts.length - 1], {
+        icon: L.divIcon({ className: '', iconSize: [12, 12], iconAnchor: [6, 6], html: '<div class="live-dot"></div>' }),
+        interactive: false, zIndexOffset: 1200
+      }).addTo(liveLayer);
+    } else {
+      liveLine.setLatLngs(s.pts);
+      liveDot.setLatLng(s.pts[s.pts.length - 1]);
+    }
+    if (liveFollow && s.active && !s.paused) map.panTo(s.pts[s.pts.length - 1], { animate: false });
+  }
+
+  /* Suivre la position, sauf si l'utilisateur déplace la carte lui-même ;
+     toucher le compteur recentre et réactive le suivi. */
+  map.on('dragstart', function () { liveFollow = false; });
+  $('livehud').addEventListener('click', function () {
+    var s = Tracker.snapshot();
+    liveFollow = true;
+    if (s.pts.length) map.setView(s.pts[s.pts.length - 1], Math.max(map.getZoom(), 16));
+  });
+
+  $('btnLiveStart').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    Tracker.start().then(function (sensor) {
+      liveFollow = true;
+      if (!sensor && Tracker.pedometer.supported()) {
+        status('Accéléromètre refusé : les pas seront estimés d\'après la distance.', 1);
+      }
+    }).catch(function (e) {
+      status('Suivi impossible : ' + (e.message || e), 0, true);
+    }).then(function () { btn.disabled = false; });
+  });
+
+  $('btnLivePause').addEventListener('click', function () {
+    var s = Tracker.snapshot();
+    if (s.paused) Tracker.resume(); else Tracker.pause();
+  });
+
+  $('btnLiveStop').addEventListener('click', function () {
+    var s = Tracker.snapshot();
+    if (s.dist > 200 && !confirm('Terminer la sortie (' + fmtKm(s.dist) + ' km) ?')) return;
+    Tracker.stop();
+  });
+
+  $('btnLiveSave').addEventListener('click', function () {
+    var s = Tracker.snapshot();
+    if (s.pts.length < 2) return;
+    Store.addRun(Geo.cellsAlong(s.pts, 15), s.dist / 1000, 'Sortie enregistrée');
+    this.textContent = '✓ Enregistré';
+    var b = this;
+    setTimeout(function () { b.textContent = '✓ Ajouter à l\'historique'; }, 2500);
+    syncLabels();
+  });
+
+  $('btnLiveGpx').addEventListener('click', function () {
+    var s = Tracker.snapshot();
+    if (s.pts.length < 2) return;
+    var times = s.ts.length === s.pts.length
+      ? s.ts.map(function (t) { return s.t0 + t * 1000; })
+      : null;
+    download('sortie-' + fmtKm(s.dist).replace(',', '_') + 'km.gpx', 'application/gpx+xml',
+      gpxDoc('Sortie ' + fmtKm(s.dist) + ' km', s.pts, { times: times, start: s.t0 }));
+  });
+
+  $('btnLiveReset').addEventListener('click', function () {
+    if (!confirm('Effacer cette sortie ?')) return;
+    Tracker.reset();
+  });
+
+  /* ---- écran noir : la façon fiable de courir téléphone en poche ----
+     L'écran reste allumé (le verrou d'écran tient), donc GPS et accéléromètre
+     continuent de fonctionner ; il n'affiche simplement plus rien. */
+  $('btnBlack').addEventListener('click', function () {
+    renderLive(Tracker.snapshot());
+    $('blackout').hidden = false;
+  });
+  $('blackout').addEventListener('click', function () { this.hidden = true; });
+
+  /* ---- tentative de survie écran éteint (son inaudible) ---- */
+  $('bgKeep').addEventListener('change', function () {
+    Tracker.background(this.checked);
+    saveSettings();
+  });
+
+  Tracker.on(renderLive);
 
   /* ================= zones hors ligne ================= */
 
@@ -1110,7 +1337,7 @@
 
   var SETTING_IDS = ['dist', 'minutes', 'pace', 'sector', 'nature', 'hilliness', 'dplus',
     'fresh', 'water', 'mode', 'objective'];
-  var CHECK_IDS = ['green', 'steps', 'varied', 'round', 'night'];
+  var CHECK_IDS = ['green', 'steps', 'varied', 'round', 'night', 'bgKeep'];
 
   function saveSettings() {
     /* On repart des préférences stockées : syncLabels() s'exécute au
@@ -1225,7 +1452,7 @@
   /* Accès de débogage depuis la console du navigateur */
   window.JogRoute = {
     state: state, map: map, run: run, setStart: setStart, setEnd: setEnd,
-    buildGpx: buildGpx, engine: engine, Store: Store
+    buildGpx: buildGpx, engine: engine, Store: Store, Tracker: Tracker
   };
 
   /* ================= démarrage ================= */
@@ -1236,6 +1463,11 @@
   renderZones();
   updateOnline();
   updateEndInfo();
+
+  Tracker.background($('bgKeep').checked);
+
+  /* Sortie interrompue par un rechargement : elle revient en pause. */
+  if (!Tracker.restore()) renderLive(Tracker.snapshot());
 
   /* Dernier départ connu : l'app s'ouvre là où on était, même si le GPS
      tarde ou échoue. */

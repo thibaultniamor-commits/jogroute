@@ -48,6 +48,8 @@ puis ouvrir <http://localhost:8765/index.html>.
    jours, et exiger un **point d'eau** tous les N kilomètres.
 7. **Générer** — tracé coloré par type de voie, bornes kilométriques,
    **profil altimétrique** survolable, statistiques, jusqu'à 5 variantes.
+8. **Suivi en direct** — pendant la sortie, l'app compte la **distance
+   parcourue** et le **nombre de pas**, et affiche durée, allure et cadence.
 
 ### Emporter le parcours
 
@@ -62,6 +64,59 @@ puis ouvrir <http://localhost:8765/index.html>.
 > Google Maps n'accepte que 9 étapes intermédiaires et recalcule le chemin entre
 > elles : le tracé y est **approché**. Pour la trace fidèle au mètre, utiliser le
 > GPX.
+
+### Compter sa sortie
+
+Le bouton **« ▶ Démarrer la sortie »** ouvre un compteur qui fonctionne avec ou
+sans parcours généré :
+
+| Mesure | Source |
+|---|---|
+| **Distance** | positions GPS, lissées et cumulées par bonds (voir plus bas) |
+| **Pas** | accéléromètre du téléphone ; à défaut, estimation par la foulée |
+| Trous de mesure | battement d'une seconde : tout gel est détecté et déclaré |
+| Durée, allure | chronomètre de la sortie, pause comprise |
+| Cadence, foulée | pas des 12 dernières secondes, distance ÷ pas |
+
+Un compteur en gros caractères s'affiche **par-dessus la carte** (le toucher
+recentre la vue), la trace réelle se dessine au fil de la course, et si un
+parcours est affiché, une barre indique l'**avancement** et ce qu'il reste.
+
+À l'arrêt : **⬇ GPX de la sortie** exporte la trace réellement parcourue, avec
+les horodatages — Strava et les montres en recalculent l'allure. **✓ Ajouter à
+l'historique** l'ajoute aux sorties mémorisées, que le générateur évite ensuite.
+
+L'écran est maintenu allumé pendant la course (Wake Lock), et la sortie est
+recopiée localement toutes les 5 secondes : si la page est rechargée ou l'onglet
+tué, elle est retrouvée **en pause**, distance et pas intacts.
+
+#### Courir téléphone en poche
+
+Une page web n'a **aucun accès au GPS ni à l'accéléromètre quand l'écran est
+éteint** : iOS gèle l'onglet en quelques secondes, Android le suspend, et aucune
+API ne contourne cela (un service worker n'a pas droit à la géolocalisation).
+Deux réponses, dans cet ordre :
+
+1. **« 🌙 Écran noir »** — l'écran reste techniquement allumé, donc tout continue
+   d'être mesuré, mais n'affiche plus qu'un fond noir et quatre chiffres à peine
+   éclairés. Sur dalle OLED la consommation est négligeable, et le téléphone
+   peut rester en poche sans appuis intempestifs. Un toucher revient à la carte.
+   **C'est la méthode fiable.**
+2. **« Tenter de continuer écran éteint »** (case à cocher) — l'app diffuse une
+   piste d'une seconde bouclée dont les échantillons valent ±1 sur 16 bits, soit
+   −90 dBFS : rigoureusement inaudible, mais un flux sonore aux yeux du
+   navigateur, qui cesse alors de geler l'onglet. Cela fonctionne en général sur
+   Android, pas toujours sur iPhone, et **peut mettre votre musique en pause**
+   (la page prend le focus audio). La ligne *Veille écran éteint* indique si le
+   navigateur a réellement accordé la lecture, ou l'a refusée.
+
+Et quoi qu'il arrive, **les trous sont déclarés**. Si la page a malgré tout été
+gelée, le battement d'une seconde s'en aperçoit au réveil : le temps perdu est
+compté à part (« ⚠ 4:12 non mesurées »), les deux bords du trou ne sont **pas**
+reliés par une ligne droite — la distance parcourue entre-temps est inconnue,
+pas nulle — et l'allure se calcule sur le seul temps réellement mesuré, pour ne
+pas afficher un 30:00/km absurde. Mieux vaut une distance sous-estimée et
+signalée qu'un chiffre inventé.
 
 ## Comment fonctionne le moteur
 
@@ -94,6 +149,35 @@ puis ouvrir <http://localhost:8765/index.html>.
 
 Tout ce calcul tourne dans un **Web Worker** : l'interface ne se fige jamais.
 
+## Comment comptent les compteurs
+
+**Distance.** Compter bêtement la distance entre deux points GPS successifs ne
+marche pas : à l'arrêt le point « danse » de quelques mètres et le compteur
+grimpe tout seul, et en courant le bruit ajoute 15 à 20 % à chaque segment de
+3 m. D'où deux étages :
+
+1. un **lissage à constante de temps** (τ ≈ 1 s pour ±8 m de précision annoncée,
+   3 s pour ±25 m) — le gain suit l'intervalle réel entre deux points, sinon un
+   GPS qui ne parle qu'une fois toutes les 5 s traînerait loin derrière ;
+2. une **ancre** : rien n'est compté tant que la position lissée n'a pas quitté
+   un rayon d'environ une précision GPS (au moins 8 m) autour du dernier point
+   validé ; au-delà, la corde entière est ajoutée et l'ancre s'y déplace.
+
+À l'arrêt le compteur est donc rigoureusement figé, et en mouvement la distance
+est mesurée par cordes d'une dizaine de mètres, bien moins sensibles au bruit.
+Les sauts (plus de 12 m/s entre deux points bruts) sont ignorés.
+
+**Pas.** La magnitude de l'accélération oscille autour de *g* d'environ ±2 m/s²
+à la marche et ±6 m/s² en courant. On la lisse légèrement puis on compte une
+crête par pas, le seuil étant la moyenne des extrêmes de la dernière seconde :
+il s'adapte donc tout seul à l'allure et à la façon de porter le téléphone
+(main, poche, brassard). Un intervalle minimal de 250 ms évite les rebonds, et
+une amplitude minimale évite de compter les vibrations d'un appareil posé.
+
+Sur un banc d'essai simulant marche, course et sprint, le comptage tombe juste
+au pas près ; la distance se tient à ±3 % sur une boucle de 2 km, y compris avec
+un GPS dégradé à ±25 m ne donnant qu'un point toutes les 5 secondes.
+
 ## Hors ligne
 
 - Le graphe d'une zone est stocké en **IndexedDB** sous forme compacte
@@ -121,6 +205,7 @@ Tout ce calcul tourne dans un **Web Worker** : l'interface ne se fige jamais.
 | `js/router.js` | tas binaire, Dijkstra borné, recherche et notation des tracés |
 | `js/worker.js` | héberge le moteur hors du thread principal |
 | `js/share.js` | lien JogRoute, lien Google Maps, QR code |
+| `js/tracker.js` | suivi en direct : distance GPS filtrée, podomètre, sortie en cours |
 | `js/app.js` | carte Leaflet, interface, rendu, profil, export |
 | `sw.js`, `manifest.webmanifest` | installation et fonctionnement hors ligne |
 | `vendor/` | Leaflet et qrcode-generator, embarqués (aucun CDN) |
@@ -141,6 +226,13 @@ Console du navigateur : `JogRoute.state`, `JogRoute.run()`,
 - Zones très denses (centre de Paris) : téléchargement plus lourd, calcul plus long.
 - L'itinéraire Google Maps est une approximation à ~8 étapes (limite de l'API
   d'URL Maps).
+- Écran éteint, aucune page web ne peut mesurer quoi que ce soit : utiliser
+  **« Écran noir »**, ou la case *continuer écran éteint* (son inaudible, sans
+  garantie sur iPhone). Tout gel est détecté et annoncé plutôt que comblé.
+- Le comptage des pas exige un accéléromètre et une page en **https** ; sur
+  ordinateur, ou si la permission de mouvement est refusée (iOS la demande), les
+  pas sont *estimés* à partir de la distance et de la vitesse, et affichés
+  précédés de « ≈ ».
 
 ## Licence
 

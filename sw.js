@@ -5,9 +5,11 @@
      (les données utiles sont déjà stockées en IndexedDB par l'application) */
 'use strict';
 
-var VERSION = 'jogroute-v1';
+var VERSION = 'jogroute-v2';
 var SHELL = VERSION + '-shell';
-var TILES = VERSION + '-tiles';
+/* Le cache des fonds de carte est volontairement hors version : une mise à
+   jour de l'app ne doit pas effacer les tuiles gardées pour l'hors ligne. */
+var TILES = 'jogroute-tiles';
 var MAX_TILES = 700;
 
 var ASSETS = [
@@ -31,6 +33,7 @@ var ASSETS = [
   'js/share.js',
   'js/graph.js',
   'js/router.js',
+  'js/tracker.js',
   'js/app.js',
   'js/worker.js',
   'icons/icon-192.png',

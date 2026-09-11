@@ -154,6 +154,52 @@
       <button class="primary" id="btnGo">Générer le parcours</button>
     </div>
 
+    <div class="section" id="liveBox">
+      <h2>Suivi en direct · distance &amp; pas</h2>
+      <div class="kpis">
+        <div class="kpi"><b id="lDist">0,00 km</b><span>Distance</span></div>
+        <div class="kpi"><b id="lSteps">0</b><span>Pas</span></div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><b id="lTime">0:00</b><span>Durée</span></div>
+        <div class="kpi"><b id="lPace">—</b><span>Allure</span></div>
+      </div>
+
+      <div id="liveGoal" hidden>
+        <div class="sub" id="liveGoalLabel">Avancement sur le parcours</div>
+        <div class="bar goal"><i id="liveGoalBar"></i></div>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="btnLiveStart" class="primary-soft">▶ Démarrer la sortie</button>
+        <button id="btnLivePause" class="ghost" hidden>⏸ Pause</button>
+        <button id="btnLiveStop" class="ghost" hidden>⏹ Terminer</button>
+      </div>
+
+      <div class="row" style="margin-top:6px" id="btnBlackRow" hidden>
+        <button id="btnBlack" class="ghost">🌙 Écran noir — téléphone en poche</button>
+      </div>
+
+      <p class="hint" id="liveInfo">Compte la distance réelle (GPS) et les pas (accéléromètre du téléphone), sans rien envoyer nulle part.</p>
+
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="bgKeep"> Tenter de continuer écran éteint</label>
+      <p class="hint" style="margin-top:-2px">Diffuse un son inaudible, seul moyen pour une page web de rester active écran éteint. Marche en général sur Android, pas toujours sur iPhone, et peut mettre votre musique en pause. <b>Écran noir</b> reste la méthode sûre.</p>
+
+      <div class="metrics" id="liveMetrics" hidden>
+        <div><span>Cadence</span><b id="lCad">—</b></div>
+        <div><span>Longueur de foulée</span><b id="lStride">—</b></div>
+        <div><span>Vitesse</span><b id="lSpeed">—</b></div>
+        <div><span>Précision GPS</span><b id="lAcc">—</b></div>
+        <div id="lBgRow" hidden><span>Veille écran éteint</span><b id="lBg">—</b></div>
+      </div>
+
+      <div class="btn-grid" id="liveDone" hidden style="margin-top:10px">
+        <button id="btnLiveSave" class="primary-soft">✓ Ajouter à l'historique</button>
+        <button id="btnLiveGpx">⬇ GPX de la sortie</button>
+        <button id="btnLiveReset">✕ Effacer</button>
+      </div>
+    </div>
+
     <div id="status"><span class="msg"></span><div class="bar"><i></i></div></div>
 
     <div class="section" id="results" style="display:none">
@@ -224,13 +270,30 @@
     </div>
   </aside>
 
-  <div id="map"></div>
+  <div id="map">
+    <div id="livehud" hidden>
+      <div><b id="hDist">0,00</b><span>km</span></div>
+      <div><b id="hSteps">0</b><span>pas</span></div>
+      <div><b id="hTime">0:00</b><span>durée</span></div>
+      <div><b id="hPace">—</b><span>/km</span></div>
+    </div>
+  </div>
   <div id="maplegend">
     <div><em style="background:#46d17a"></em> Sentier / piste</div>
     <div><em style="background:#4ea8ff"></em> Voie piétonne</div>
     <div><em style="background:#f0c419"></em> Rue calme</div>
     <div><em style="background:#ff6b5e"></em> Route passante</div>
   </div>
+</div>
+
+<div id="blackout" hidden>
+  <div class="bo-grid">
+    <div><b id="boDist">0,00</b><span>km</span></div>
+    <div><b id="boSteps">0</b><span>pas</span></div>
+    <div><b id="boTime">0:00</b><span>durée</span></div>
+    <div><b id="boPace">—</b><span>/km</span></div>
+  </div>
+  <p class="bo-hint">Le comptage continue · touchez pour revenir</p>
 </div>
 
 <div id="modal" class="modal" hidden>
@@ -251,6 +314,7 @@
 <script src="js/share.js"></script>
 <script src="js/graph.js"></script>
 <script src="js/router.js"></script>
+<script src="js/tracker.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
