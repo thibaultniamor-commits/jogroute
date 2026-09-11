@@ -516,3 +516,39 @@ a { color: var(--accent-2); }
   .kpis { flex-wrap: wrap; }
   .kpi { min-width: calc(50% - 4px); }
 }
+
+/* ---------- accessibilité ----------
+   Un parcours au clavier doit se voir. Le style par défaut du navigateur
+   disparaissait sous les fonds sombres du panneau ; on le remplace par un
+   anneau net, et seulement au clavier (`:focus-visible`), pour ne pas le
+   faire apparaître sous la souris. */
+:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+#livehud:focus-visible, #blackout:focus-visible { outline-offset: -4px; }
+
+/* Le corps d'une boîte de dialogue se lit mieux aligné à gauche que centré ;
+   seul le titre garde le centrage de la carte. */
+#modalBody p, #modalBody label { text-align: left; }
+#modalBody .row { margin-top: 4px; }
+
+/* ---------- temps de passage ---------- */
+table.splits {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+table.splits td {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+table.splits td:first-child { color: var(--text); width: 4.5em; }
+table.splits td:nth-child(2) { color: var(--text); text-align: right; }
+table.splits td:last-child { text-align: right; width: 5em; }
+table.splits tr:last-child td { border-bottom: 0; }
+/* Le kilomètre le plus rapide de la sortie. */
+table.splits tr.best td:nth-child(2) { color: var(--accent); font-weight: 600; }

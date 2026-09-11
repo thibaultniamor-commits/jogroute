@@ -365,11 +365,29 @@
     $('endWrap').hidden = !p2p;
     $('round').closest('label').style.opacity = $('mode').value === 'loop' ? 1 : .45;
 
+    /* Les curseurs affichent leur valeur dans un élément voisin : sans
+       aria-valuetext, un lecteur d'écran annonce « 8 » et jamais « 8 km ». */
+    announceSliders();
+
     var runs = Store.runs().length;
     $('freshHint').textContent = runs
       ? runs + ' sortie' + (runs > 1 ? 's' : '') + ' en mémoire (locale). Le bouton « J\'ai couru ça » alimente cette liste.'
       : 'Aucune sortie mémorisée : validez un parcours avec « J\'ai couru ça » pour que le moteur commence à varier.';
     saveSettings();
+  }
+
+  /* Chaque curseur et la valeur lisible qui lui correspond à l'écran. */
+  var SLIDER_OUT = {
+    dist: 'distOut', minutes: 'timeOut', pace: 'paceOut', sector: 'sectorOut',
+    nature: 'natOut', hilliness: 'hillOut', dplus: 'dplusOut',
+    fresh: 'freshOut', water: 'waterOut'
+  };
+
+  function announceSliders() {
+    for (var id in SLIDER_OUT) {
+      var out = $(SLIDER_OUT[id]);
+      if (out) $(id).setAttribute('aria-valuetext', out.textContent);
+    }
   }
 
   ['dist', 'minutes', 'pace', 'sector', 'nature', 'hilliness', 'dplus', 'fresh', 'water']
@@ -379,22 +397,33 @@
     $(id).addEventListener('change', syncLabels);
   });
 
+  /* La rose des vents est un choix exclusif : `aria-pressed` dit lequel est
+     retenu, la classe `on` ne se voyant qu'à l'écran. */
+  function markCompass(chosen) {
+    Array.prototype.forEach.call($('compass').querySelectorAll('button'), function (x) {
+      var on = x === chosen;
+      x.classList.toggle('on', on);
+      x.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
   $('compass').addEventListener('click', function (e) {
     var b = e.target.closest('button');
     if (!b) return;
-    Array.prototype.forEach.call(this.querySelectorAll('button'), function (x) { x.classList.remove('on'); });
-    b.classList.add('on');
+    markCompass(b);
     direction = b.dataset.dir === '' ? null : +b.dataset.dir;
     syncLabels();
   });
 
   function setDirection(deg) {
     direction = deg;
+    var chosen = null;
     Array.prototype.forEach.call($('compass').querySelectorAll('button'), function (x) {
-      x.classList.remove('on');
       var d = x.dataset.dir === '' ? null : +x.dataset.dir;
-      if (deg === null ? d === null : (d !== null && Geo.angleDiff(d, deg) < 22.5)) x.classList.add('on');
+      var on = deg === null ? d === null : (d !== null && Geo.angleDiff(d, deg) < 22.5);
+      if (on && !chosen) chosen = x;
     });
+    markCompass(chosen);
     syncLabels();
   }
 
@@ -425,7 +454,12 @@
     el.className = 'on' + (err ? ' err' : '');
     lastMsg = msg;
     el.querySelector('.msg').textContent = msg;
-    el.querySelector('.bar i').style.width = Math.round((frac || 0) * 100) + '%';
+    var pct = Math.round((frac || 0) * 100);
+    el.querySelector('.bar i').style.width = pct + '%';
+    el.querySelector('.bar').setAttribute('aria-valuenow', pct);
+    /* Une erreur interrompt : elle mérite d'être annoncée sans attendre la fin
+       de ce que le lecteur d'écran est en train de lire. */
+    el.setAttribute('aria-live', err ? 'assertive' : 'polite');
   }
   function statusOff() { $('status').className = ''; stopTimer(); }
 
@@ -588,9 +622,10 @@
     if (!state.start) { status('Posez d\'abord un point de départ.', 0, true); return; }
     var lat = state.start.lat, lon = state.start.lon;
     Overpass.reverse(lat, lon).then(function (guess) {
-      var name = prompt('Nom du départ favori :', guess || 'Départ');
+      return askText('Départ favori', 'Nom de ce départ', guess || 'Départ');
+    }).then(function (name) {
       if (!name) return;
-      Store.addFavorite(name.trim().slice(0, 28), lat, lon);
+      Store.addFavorite(name.slice(0, 28), lat, lon);
       renderFavorites();
     });
   });
@@ -827,6 +862,7 @@
         status('Aucun parcours trouvé (' + why + ') : essayez une autre distance, ' +
           'une direction plus large ou un autre point de départ.', 0, true);
         state.routes = [];
+        Coach.setRoute(null);
         $('results').style.display = 'none';
         $('variantsBox').style.display = 'none';
         return;
@@ -895,6 +931,8 @@
     draw(r, fit);
     showStats(r);
     renderVariants();
+    /* Les virages à signaler sont ceux du tracé qu'on regarde. */
+    Coach.setRoute(ptsOf(r));
   }
 
   function draw(r, fit) {
@@ -1154,15 +1192,96 @@
     });
   }
 
-  function openModal(title, html) {
+  /* La modale rend aussi le focus là où il était : sans cela, fermer une
+     boîte renvoyait le clavier en haut de la page. */
+  var modalReturn = null, modalDismiss = null;
+
+  function openModal(title, html, onDismiss) {
+    modalReturn = document.activeElement;
+    modalDismiss = onDismiss || null;
     $('modalTitle').textContent = title;
     $('modalBody').innerHTML = html;
     $('modal').hidden = false;
+    /* Le focus entre dans le dialogue : sur le premier champ s'il y en a un,
+       sinon sur la fermeture. */
+    var first = $('modalBody').querySelector('input, button, select, textarea');
+    (first || $('modalClose')).focus();
   }
-  function closeModal() { $('modal').hidden = true; }
+
+  function closeModal() {
+    if ($('modal').hidden) return;
+    $('modal').hidden = true;
+    var dismiss = modalDismiss;
+    modalDismiss = null;
+    if (modalReturn && modalReturn.focus) modalReturn.focus();
+    modalReturn = null;
+    if (dismiss) dismiss();
+  }
+
   $('modalClose').addEventListener('click', closeModal);
   $('modal').addEventListener('click', function (e) { if (e.target === this) closeModal(); });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
+
+  /* ---- confirmations et saisies ----
+     `confirm()` et `prompt()` sont bloqués dans plusieurs contextes, illisibles
+     sur téléphone, et ne laissent aucune prise à la mise en forme. On réutilise
+     la modale, qui existait déjà pour les QR codes. */
+
+  function askConfirm(title, question, okLabel) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function answer(v) {
+        if (done) return;
+        done = true;
+        resolve(v);
+      }
+      openModal(title,
+        '<p style="margin:0 0 14px">' + escapeHtml(question) + '</p>' +
+        '<div class="row">' +
+        '<button id="mdNo" class="ghost">Annuler</button>' +
+        '<button id="mdYes" class="primary-soft">' + escapeHtml(okLabel || 'Confirmer') + '</button>' +
+        '</div>',
+        function () { answer(false); });          // fermeture = refus
+      $('mdNo').addEventListener('click', closeModal);
+      $('mdYes').addEventListener('click', function () {
+        answer(true);
+        modalDismiss = null;
+        closeModal();
+      });
+    });
+  }
+
+  function askText(title, label, value, okLabel) {
+    return new Promise(function (resolve) {
+      var done = false;
+      function answer(v) {
+        if (done) return;
+        done = true;
+        resolve(v);
+      }
+      openModal(title,
+        '<label class="field" style="margin-bottom:12px">' +
+        '<span>' + escapeHtml(label) + '</span>' +
+        '<input type="text" id="mdText" value="' + escapeHtml(value || '') + '"></label>' +
+        '<div class="row">' +
+        '<button id="mdCancel" class="ghost">Annuler</button>' +
+        '<button id="mdOk" class="primary-soft">' + escapeHtml(okLabel || 'Enregistrer') + '</button>' +
+        '</div>',
+        function () { answer(null); });
+      function submit() {
+        var v = $('mdText').value.trim();
+        answer(v || null);
+        modalDismiss = null;
+        closeModal();
+      }
+      $('mdCancel').addEventListener('click', closeModal);
+      $('mdOk').addEventListener('click', submit);
+      $('mdText').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      });
+      $('mdText').select();
+    });
+  }
 
   /* ================= historique « j'ai couru ça » ================= */
 
@@ -1179,9 +1298,15 @@
   });
 
   $('btnClearRuns').addEventListener('click', function () {
-    if (!confirm('Effacer l\'historique des sorties mémorisées ?')) return;
-    Store.clearRuns();
-    syncLabels();
+    var n = Store.runs().length;
+    askConfirm('Effacer l\'historique',
+      n + ' sortie' + (n > 1 ? 's' : '') + ' mémorisée' + (n > 1 ? 's' : '') +
+      ' vont être oubliées. Le générateur cessera de les éviter.',
+      'Effacer').then(function (ok) {
+        if (!ok) return;
+        Store.clearRuns();
+        syncLabels();
+      });
   });
 
   /* ================= export GPX ================= */
@@ -1260,7 +1385,9 @@
         'la distance parcourue pendant ce temps manque.'
       : '';
 
-    if (s.error) return s.error + gap;
+    /* `s.error` peut contenir un message venu du navigateur : il entre dans du
+       HTML, donc il s'échappe. Le reste de cette fonction est écrit ici. */
+    if (s.error) return escapeHtml(s.error) + gap;
     /* Le bilan passe avant tout le reste : une sortie retrouvée puis terminée
        sans être reprise ne doit pas continuer à s'annoncer « interrompue ». */
     if (s.done) {
@@ -1335,9 +1462,11 @@
     $('liveGoal').hidden = !goal;
     if (goal) {
       var f = Math.min(1, s.dist / goal);
-      $('liveGoalBar').style.width = Math.round(f * 100) + '%';
+      var pc = Math.round(f * 100);
+      $('liveGoalBar').style.width = pc + '%';
+      $('liveGoalBar').parentNode.setAttribute('aria-valuenow', pc);
       $('liveGoalLabel').textContent = 'Avancement sur le parcours — ' +
-        Math.round(f * 100) + ' % · reste ' + fmtKm(Math.max(0, goal - s.dist)) + ' km';
+        pc + ' % · reste ' + fmtKm(Math.max(0, goal - s.dist)) + ' km';
     }
 
     $('liveInfo').innerHTML = liveInfoText(s);
@@ -1368,15 +1497,35 @@
   /* Suivre la position, sauf si l'utilisateur déplace la carte lui-même ;
      toucher le compteur recentre et réactive le suivi. */
   map.on('dragstart', function () { liveFollow = false; });
-  $('livehud').addEventListener('click', function () {
+
+  function recentre() {
     var s = Tracker.snapshot();
     liveFollow = true;
     if (s.pts.length) map.setView(s.pts[s.pts.length - 1], Math.max(map.getZoom(), 16));
-  });
+  }
+
+  /* Ces deux-là sont des `div` cliquables : sans gestion du clavier, elles
+     restent hors d'atteinte pour qui ne touche pas l'écran. */
+  function activable(el, fn) {
+    el.addEventListener('click', fn);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        fn.call(el, e);
+      }
+    });
+  }
+
+  activable($('livehud'), recentre);
 
   $('btnLiveStart').addEventListener('click', function () {
     var btn = this;
     btn.disabled = true;
+    /* Coach.start() doit partir du geste de l'utilisateur : c'est la seule
+       occasion où le navigateur accepte d'autoriser la synthèse vocale. */
+    Coach.start();
+    Coach.setRoute(currentRoute() ? ptsOf(currentRoute()) : null);
+    renderSplits();
     Tracker.start().then(function (sensor) {
       liveFollow = true;
       if (!sensor && Tracker.pedometer.supported()) {
@@ -1394,8 +1543,11 @@
 
   $('btnLiveStop').addEventListener('click', function () {
     var s = Tracker.snapshot();
-    if (s.dist > 200 && !confirm('Terminer la sortie (' + fmtKm(s.dist) + ' km) ?')) return;
-    Tracker.stop();
+    if (s.dist <= 200) { Coach.stop(); Tracker.stop(); return; }
+    askConfirm('Terminer la sortie',
+      fmtKm(s.dist) + ' km en ' + fmtClock(s.seconds) + '. La sortie sera arrêtée — ' +
+      'vous pourrez encore l\'exporter ou l\'ajouter à l\'historique.',
+      'Terminer').then(function (ok) { if (ok) { Coach.stop(); Tracker.stop(); } });
   });
 
   $('btnLiveSave').addEventListener('click', function () {
@@ -1419,8 +1571,16 @@
   });
 
   $('btnLiveReset').addEventListener('click', function () {
-    if (!confirm('Effacer cette sortie ?')) return;
-    Tracker.reset();
+    askConfirm('Effacer cette sortie',
+      'La trace, la distance et les pas seront perdus. ' +
+      'Pensez à exporter le GPX avant, si vous y tenez.',
+      'Effacer').then(function (ok) {
+        if (!ok) return;
+        Coach.stop();
+        Coach.resetSplits();
+        renderSplits();
+        Tracker.reset();
+      });
   });
 
   /* ---- écran noir : la façon fiable de courir téléphone en poche ----
@@ -1429,8 +1589,12 @@
   $('btnBlack').addEventListener('click', function () {
     renderLive(Tracker.snapshot());
     $('blackout').hidden = false;
+    $('blackout').focus();
   });
-  $('blackout').addEventListener('click', function () { this.hidden = true; });
+  activable($('blackout'), function () {
+    $('blackout').hidden = true;
+    $('btnBlack').focus();
+  });
 
   /* ---- tentative de survie écran éteint (son inaudible) ---- */
   $('bgKeep').addEventListener('change', function () {
@@ -1438,7 +1602,59 @@
     saveSettings();
   });
 
-  Tracker.on(renderLive);
+  /* ---- annonces, vibrations, temps de passage ----
+     Le coach s'intercale entre le Tracker et l'affichage : il décide de ce
+     qu'on entend et de ce qu'on sent, et tient les temps par kilomètre. */
+
+  function syncCoach() {
+    Coach.configure({ voice: $('voice').checked, vibrate: $('vibrate').checked });
+    saveSettings();
+  }
+
+  ['voice', 'vibrate'].forEach(function (id) {
+    $(id).addEventListener('change', syncCoach);
+  });
+
+  /* Ne pas proposer ce que l'appareil ne sait pas faire : sur iPhone, aucune
+     page web n'a accès au vibreur, quel que soit le navigateur. */
+  function declareCoachSupport() {
+    var notes = ['Distance, temps et allure du kilomètre écoulé.'];
+    if (!Coach.supportsVoice()) {
+      $('voice').checked = false;
+      $('voice').disabled = true;
+      notes.push('Ce navigateur ne propose pas de synthèse vocale.');
+    }
+    if (!Coach.supportsVibration()) {
+      $('vibrate').checked = false;
+      $('vibrate').disabled = true;
+      notes.push('Cet appareil n\'accorde pas le vibreur aux pages web ' +
+        '(c\'est le cas de tous les iPhone).');
+    } else {
+      notes.push('Une vibration 45 m avant un virage du parcours affiché, ' +
+        'une autre au virage.');
+    }
+    $('coachHint').textContent = notes.join(' ');
+  }
+
+  function renderSplits() {
+    var rows = Coach.splits();
+    $('splitsBox').hidden = !rows.length;
+    if (!rows.length) return;
+    var best = Infinity;
+    rows.forEach(function (r) { if (r.sec > 0 && r.sec < best) best = r.sec; });
+    $('splits').innerHTML = rows.map(function (r) {
+      return '<tr' + (r.sec === best ? ' class="best"' : '') + '>' +
+        '<td>' + r.km + ' km</td>' +
+        '<td>' + fmtPace(r.sec) + ' /km</td>' +
+        '<td>' + fmtClock(r.at) + '</td></tr>';
+    }).join('');
+  }
+
+  Tracker.on(function (s) {
+    Coach.tick(s);
+    renderSplits();
+    renderLive(s);
+  });
 
   /* ================= zones hors ligne ================= */
 
@@ -1472,11 +1688,16 @@
   });
 
   $('btnClearZones').addEventListener('click', function () {
-    if (!confirm('Vider le cache des zones et des tuiles de relief ?')) return;
-    Store.clearGraphs().then(function () {
-      state.zone = null;
-      renderZones();
-    });
+    askConfirm('Vider le cache',
+      'Les zones gardées hors ligne et les tuiles de relief seront supprimées. ' +
+      'Il faudra les retélécharger, ce qui demande du réseau.',
+      'Vider').then(function (ok) {
+        if (!ok) return;
+        Store.clearGraphs().then(function () {
+          state.zone = null;
+          renderZones();
+        });
+      });
   });
 
   function renderZones() {
@@ -1518,7 +1739,7 @@
 
   var SETTING_IDS = ['dist', 'minutes', 'pace', 'sector', 'nature', 'hilliness', 'dplus',
     'fresh', 'water', 'mode', 'objective'];
-  var CHECK_IDS = ['green', 'steps', 'varied', 'round', 'night', 'bgKeep'];
+  var CHECK_IDS = ['green', 'steps', 'varied', 'round', 'night', 'bgKeep', 'voice', 'vibrate'];
 
   function saveSettings() {
     /* On repart des préférences stockées : syncLabels() s'exécute au
@@ -1594,6 +1815,7 @@
     state.routes = [];
     draw(state.shared, true);
     showStats(state.shared);
+    Coach.setRoute(pts);
     $('variantsBox').style.display = 'none';
     $('shareHint').textContent = 'Tracé reçu par lien : distance et durée sont exactes, ' +
       'mais les statistiques de terrain demandent un calcul local (bouton « Générer »).';
@@ -1622,9 +1844,42 @@
   window.addEventListener('online', updateOnline);
   window.addEventListener('offline', updateOnline);
 
+  /* ---- mise à jour de l'application ----
+     Les fichiers sont servis depuis le cache puis rafraîchis en arrière-plan :
+     une nouvelle version était donc installée sans que personne le sache, et
+     l'utilisateur tournait un chargement de retard — parfois longtemps, une
+     app installée n'étant jamais « rechargée ». On le lui dit. */
+  function announceUpdate(worker) {
+    status('Nouvelle version disponible.', 1);
+    var el = $('status');
+    var b = document.createElement('button');
+    b.className = 'ghost small';
+    b.style.marginTop = '8px';
+    b.textContent = '↻ Recharger maintenant';
+    b.addEventListener('click', function () {
+      /* Le nouveau service worker attend son tour : on lui demande de prendre
+         la main, puis on recharge quand c'est fait. */
+      if (worker) worker.postMessage({ type: 'skipWaiting' });
+      location.reload();
+    });
+    el.appendChild(b);
+  }
+
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function (e) {
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        reg.addEventListener('updatefound', function () {
+          var incoming = reg.installing;
+          if (!incoming) return;
+          incoming.addEventListener('statechange', function () {
+            /* `controller` existe déjà : ce n'est pas la première installation,
+               c'est bien une mise à jour. */
+            if (incoming.state === 'installed' && navigator.serviceWorker.controller) {
+              announceUpdate(incoming);
+            }
+          });
+        });
+      }).catch(function (e) {
         console.warn('service worker non enregistré :', e.message);
       });
     });
@@ -1646,6 +1901,8 @@
   updateEndInfo();
 
   Tracker.background($('bgKeep').checked);
+  declareCoachSupport();
+  syncCoach();
 
   /* Sortie interrompue par un rechargement : elle revient en pause. */
   if (!Tracker.restore()) renderLive(Tracker.snapshot());

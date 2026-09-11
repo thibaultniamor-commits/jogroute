@@ -31,11 +31,11 @@
       <h2>1 · Point de départ</h2>
       <div class="row" style="margin-bottom:8px">
         <input type="text" id="search" placeholder="Adresse, ville, lieu…">
-        <button id="btnSearch" style="flex:0 0 auto" title="Rechercher">🔍</button>
+        <button id="btnSearch" style="flex:0 0 auto" aria-label="Rechercher ce lieu">🔍</button>
       </div>
       <div class="row">
         <button id="btnGeo" class="ghost">📍 Ma position</button>
-        <button id="btnFav" class="ghost" title="Enregistrer ce départ">★ Enregistrer</button>
+        <button id="btnFav" class="ghost">★ <span>Enregistrer ce départ</span></button>
       </div>
       <div id="favs" class="chips"></div>
       <p class="hint" id="startInfo">Cliquez sur la carte pour poser le départ (ou déplacez le marqueur).</p>
@@ -43,7 +43,7 @@
       <div id="endWrap" hidden>
         <div class="row" style="margin-top:8px">
           <button id="btnSetEnd" class="ghost">🏁 Définir l'arrivée</button>
-          <button id="btnClearEnd" class="ghost" style="flex:0 0 auto" title="Retirer l'arrivée">✕</button>
+          <button id="btnClearEnd" class="ghost" style="flex:0 0 auto" aria-label="Retirer l'arrivée">✕</button>
         </div>
         <p class="hint" id="endInfo">Aucune arrivée définie.</p>
       </div>
@@ -87,7 +87,7 @@
 
     <div class="section">
       <h2>3 · Direction générale</h2>
-      <div class="compass" id="compass">
+      <div class="compass" id="compass" role="group" aria-label="Direction générale du parcours">
         <button data-dir="315">NO</button>
         <button data-dir="0">N</button>
         <button data-dir="45">NE</button>
@@ -168,7 +168,8 @@
 
       <div id="liveGoal" hidden>
         <div class="sub" id="liveGoalLabel">Avancement sur le parcours</div>
-        <div class="bar goal"><i id="liveGoalBar"></i></div>
+        <div class="bar goal" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+             aria-valuenow="0" aria-labelledby="liveGoalLabel"><i id="liveGoalBar"></i></div>
       </div>
 
       <div class="row" style="margin-top:10px">
@@ -182,6 +183,16 @@
       </div>
 
       <p class="hint" id="liveInfo">Compte la distance réelle (GPS) et les pas (accéléromètre du téléphone), sans rien envoyer nulle part.</p>
+
+      <div class="sub" style="margin-top:12px">Pendant la course, sans regarder l'écran</div>
+      <label class="check"><input type="checkbox" id="voice"> Annoncer chaque kilomètre à voix haute</label>
+      <label class="check"><input type="checkbox" id="vibrate"> Vibrer avant chaque changement de direction</label>
+      <p class="hint" style="margin-top:-2px" id="coachHint">Distance, temps et allure du kilomètre écoulé ; une vibration 45 m avant un virage du parcours affiché, une autre au virage.</p>
+
+      <div id="splitsBox" hidden style="margin-top:12px">
+        <div class="sub">Temps par kilomètre</div>
+        <table class="splits"><tbody id="splits"></tbody></table>
+      </div>
 
       <label class="check" style="margin-top:10px"><input type="checkbox" id="bgKeep"> Tenter de continuer écran éteint</label>
       <p class="hint" style="margin-top:-2px">Diffuse un son inaudible, seul moyen pour une page web de rester active écran éteint. Marche en général sur Android, pas toujours sur iPhone, et peut mettre votre musique en pause. <b>Écran noir</b> reste la méthode sûre.</p>
@@ -201,7 +212,11 @@
       </div>
     </div>
 
-    <div id="status"><span class="msg"></span><div class="bar"><i></i></div></div>
+    <div id="status" role="status" aria-live="polite">
+      <span class="msg"></span>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-valuenow="0" aria-label="Avancement du calcul"><i></i></div>
+    </div>
 
     <div class="section" id="results" style="display:none">
       <h2>Résultat</h2>
@@ -219,10 +234,10 @@
 
       <div class="stack" id="rStack"></div>
       <div class="legend">
-        <span><em style="background:#46d17a"></em>Sentiers / pistes</span>
-        <span><em style="background:#4ea8ff"></em>Voies piétonnes</span>
-        <span><em style="background:#f0c419"></em>Rues calmes</span>
-        <span><em style="background:#ff6b5e"></em>Routes passantes</span>
+        <span><em aria-hidden="true" style="background:#46d17a"></em>Sentiers / pistes</span>
+        <span><em aria-hidden="true" style="background:#4ea8ff"></em>Voies piétonnes</span>
+        <span><em aria-hidden="true" style="background:#f0c419"></em>Rues calmes</span>
+        <span><em aria-hidden="true" style="background:#ff6b5e"></em>Routes passantes</span>
       </div>
       <div class="metrics">
         <div><span>Revêtement naturel</span><b id="rUnp">—</b></div>
@@ -272,22 +287,24 @@
   </aside>
 
   <div id="map">
-    <div id="livehud" hidden>
+    <div id="livehud" role="button" tabindex="0" hidden
+         aria-label="Compteur de la sortie — activer pour recentrer la carte">
       <div><b id="hDist">0,00</b><span>km</span></div>
       <div><b id="hSteps">0</b><span>pas</span></div>
       <div><b id="hTime">0:00</b><span>durée</span></div>
       <div><b id="hPace">—</b><span>/km</span></div>
     </div>
   </div>
-  <div id="maplegend">
-    <div><em style="background:#46d17a"></em> Sentier / piste</div>
-    <div><em style="background:#4ea8ff"></em> Voie piétonne</div>
-    <div><em style="background:#f0c419"></em> Rue calme</div>
-    <div><em style="background:#ff6b5e"></em> Route passante</div>
+  <div id="maplegend" aria-hidden="true">
+    <div><em aria-hidden="true" style="background:#46d17a"></em> Sentier / piste</div>
+    <div><em aria-hidden="true" style="background:#4ea8ff"></em> Voie piétonne</div>
+    <div><em aria-hidden="true" style="background:#f0c419"></em> Rue calme</div>
+    <div><em aria-hidden="true" style="background:#ff6b5e"></em> Route passante</div>
   </div>
 </div>
 
-<div id="blackout" hidden>
+<div id="blackout" role="button" tabindex="0" hidden
+     aria-label="Écran noir — activer pour revenir à la carte">
   <div class="bo-grid">
     <div><b id="boDist">0,00</b><span>km</span></div>
     <div><b id="boSteps">0</b><span>pas</span></div>
@@ -298,7 +315,7 @@
 </div>
 
 <div id="modal" class="modal" hidden>
-  <div class="modal-card">
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <button class="modal-close" id="modalClose" aria-label="Fermer">✕</button>
     <h3 id="modalTitle">Ouvrir sur le téléphone</h3>
     <div id="modalBody"></div>
@@ -317,6 +334,7 @@
 <script src="js/graph.js"></script>
 <script src="js/router.js"></script>
 <script src="js/tracker.js"></script>
+<script src="js/coach.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

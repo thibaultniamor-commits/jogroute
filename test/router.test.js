@@ -471,3 +471,71 @@ test('plan — quand tout se vaut, les boucles raccourcissent, mais c\'est annon
     }
   })();
 });
+
+/* ================= lissage du relief =================
+
+   Le filtre a une seule raison d'être : absorber le bruit des tuiles
+   d'altitude, qui sans lui gonfle le dénivelé de plusieurs dizaines de mètres
+   sur un parcours pourtant plat. Mais il doit le faire sans raboter le relief
+   véritable — or un sommet de côte tombe presque toujours sur un carrefour,
+   c'est-à-dire là où l'ancienne moyenne « nœud + tous ses voisins » appuyait le
+   plus fort. Ces trois tests tiennent les deux bouts. */
+
+/* Le D+ d'une traversée ouest-est de la grille. */
+function dplusTraversee(G, area) {
+  const c = (area.side - 1) >> 1;
+  const src = RGraph.nearest(G, area.at(0, c).lat, area.at(0, c).lon).node;
+  const dst = RGraph.nearest(G, area.at(area.side - 1, c).lat,
+    area.at(area.side - 1, c).lon).node;
+  const res = Router.dijkstra(G, src, { stopAt: dst });
+  const nodes = [dst], edges = [];
+  let cur = dst;
+  while (cur !== src) { edges.push(res.pe[cur]); nodes.push(res.pv[cur]); cur = res.pv[cur]; }
+  nodes.reverse(); edges.reverse();
+  return Router.stats(G, nodes, edges).climb;
+}
+
+test('lissage — la force du filtre ne dépend plus du degré du carrefour', () => {
+  /* Un terrain en pente pure : le lissage, quel qu'il soit, ne doit pas la
+     déformer — ni au milieu de la grille, ni sur les bords où les nœuds n'ont
+     que deux ou trois voisins. C'est ce que l'ancienne pondération, variable
+     selon le degré, ne garantissait pas. */
+  const { G } = gridGraph(E, { side: 9, spacing: 100, elevation: (ix) => 100 + ix * 3 });
+  const avant = Array.from(G.ele);
+  RGraph.smoothElevation(G);
+
+  let pire = 0;
+  for (let i = 0; i < G.n; i++) pire = Math.max(pire, Math.abs(G.ele[i] - avant[i]));
+  assert.ok(pire < 1.2, `une pente régulière déplacée de ${pire.toFixed(2)} m`);
+});
+
+test('lissage — un sommet de côte n\'est plus écrasé', () => {
+  /* Une crête franche : 40 m de montée puis 40 m de descente, sommet sur un
+     carrefour à quatre branches. L'ancien filtre en perdait 5. */
+  const crete = (ix) => 100 + (ix <= 10 ? ix * 4 : (20 - ix) * 4);
+  const { G, area } = gridGraph(E, { side: 21, spacing: 100, elevation: crete });
+  RGraph.smoothElevation(G);
+  const climb = dplusTraversee(G, area);
+  assert.ok(climb >= 37, `${climb} m de D+ retenus sur 40 réels`);
+});
+
+test('lissage — le bruit des tuiles reste absorbé', () => {
+  /* La raison d'être du filtre. Sans lui, un terrain plat bruité à ±3 m —
+     l'ordre de grandeur des tuiles Terrarium — produit une douzaine de mètres
+     de dénivelé imaginaire. */
+  const bruit = rng(77);
+  const brut = gridGraph(E, {
+    side: 21, spacing: 100, elevation: () => 100 + (bruit() - 0.5) * 6
+  });
+  const sans = dplusTraversee(brut.G, brut.area);
+
+  const bruit2 = rng(77);
+  const avec = gridGraph(E, {
+    side: 21, spacing: 100, elevation: () => 100 + (bruit2() - 0.5) * 6
+  });
+  RGraph.smoothElevation(avec.G);
+  const lisse = dplusTraversee(avec.G, avec.area);
+
+  assert.ok(sans > 8, `témoin : ${sans} m de D+ inventés sans lissage`);
+  assert.ok(lisse <= 3, `${lisse} m de D+ inventés malgré le lissage`);
+});

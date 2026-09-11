@@ -5,7 +5,7 @@
      (les données utiles sont déjà stockées en IndexedDB par l'application) */
 'use strict';
 
-var VERSION = 'jogroute-v3';
+var VERSION = 'jogroute-v4';
 var SHELL = VERSION + '-shell';
 /* Le cache des fonds de carte est volontairement hors version : une mise à
    jour de l'app ne doit pas effacer les tuiles gardées pour l'hors ligne. */
@@ -35,6 +35,7 @@ var ASSETS = [
   'js/graph.js',
   'js/router.js',
   'js/tracker.js',
+  'js/coach.js',
   'js/app.js',
   'js/worker.js',
   'icons/icon-192.png',
@@ -64,6 +65,12 @@ self.addEventListener('install', function (e) {
       }));
     }).then(function () { return self.skipWaiting(); })
   );
+});
+
+/* La page peut demander à la version en attente de prendre la main tout de
+   suite, quand l'utilisateur accepte de recharger. */
+self.addEventListener('message', function (e) {
+  if (e.data && e.data.type === 'skipWaiting') self.skipWaiting();
 });
 
 self.addEventListener('activate', function (e) {

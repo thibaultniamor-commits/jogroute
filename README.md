@@ -50,6 +50,8 @@ puis ouvrir <http://localhost:8765/index.html>.
    **profil altimétrique** survolable, statistiques, jusqu'à 5 variantes.
 8. **Suivi en direct** — pendant la sortie, l'app compte la **distance
    parcourue** et le **nombre de pas**, et affiche durée, allure et cadence.
+9. **Sans regarder l'écran** — annonce vocale de chaque kilomètre, vibration
+   avant chaque virage, et temps de passage par kilomètre à l'arrivée.
 
 ### Emporter le parcours
 
@@ -190,6 +192,41 @@ quand l'allure change en cours de route ; la distance se tient à ±3 % sur 2 km
 et à ±5 % avec un GPS dégradé à ±25 m ne donnant qu'un point toutes les
 5 secondes.
 
+## Courir sans regarder l'écran
+
+Le reste de l'application suppose qu'on regarde la carte. En courant, on ne la
+regarde pas : le téléphone est en poche, ou en **écran noir**. Deux réglages,
+dans la section du suivi en direct, s'adressent donc aux deux sens qui restent.
+
+| Réglage | Ce qu'il fait |
+|---|---|
+| **Annoncer chaque kilomètre** | « 5 kilomètres, 27 minutes 30, dernier kilomètre en 5 minutes 24 » |
+| **Vibrer avant chaque virage** | une brève à 45 m du virage, une plus marquée au virage (longue à droite, deux courtes à gauche) |
+
+Et à l'arrivée, un tableau des **temps par kilomètre**, le plus rapide mis en
+évidence.
+
+Quelques partis pris :
+
+- **rien n'est dit sans qu'on l'ait demandé.** Les deux cases sont décochées par
+  défaut, et tant que la voix n'est pas réclamée l'application ne touche pas à
+  la synthèse vocale — la solliciter prendrait le focus audio et couperait la
+  musique de quelqu'un qui n'a rien demandé ;
+- **aucune promesse en l'air.** La case « vibrer » est grisée là où le vibreur
+  n'est pas accessible — c'est le cas de **tous les iPhone**, quel que soit le
+  navigateur, puisqu'ils partagent le moteur de Safari ;
+- **aucune allure inventée.** Un kilomètre franchi pendant que la page dormait
+  est annoncé, mais sans son temps : il n'est pas mesuré ;
+- les **virages signalés sont ceux du parcours affiché**. Sans parcours, seuls
+  les kilomètres sont annoncés. Une courbe douce n'est pas un virage, et deux
+  sommets rapprochés ne comptent que pour un — sans quoi un tracé OSM vibrerait
+  en permanence.
+
+La position sur le tracé est cherchée **près de l'endroit où l'on se croyait**,
+et non sur tout le parcours : sur une boucle, le point le plus proche dans
+l'absolu peut appartenir au retour, à quelques mètres mais à des kilomètres de
+course.
+
 ## Hors ligne
 
 - Le graphe d'une zone est stocké en **IndexedDB** sous forme compacte
@@ -218,6 +255,7 @@ et à ±5 % avec un GPS dégradé à ±25 m ne donnant qu'un point toutes les
 | `js/worker.js` | héberge le moteur hors du thread principal |
 | `js/share.js` | lien JogRoute, lien Google Maps, QR code |
 | `js/metrics.js` | podomètre et filtre de distance GPS, sans dépendance au navigateur |
+| `js/coach.js` | annonces vocales, vibrations aux virages, temps par kilomètre |
 | `js/tracker.js` | suivi en direct : capteurs, cumuls, pause, gels, reprise |
 | `js/app.js` | carte Leaflet, interface, rendu, profil, export |
 | `sw.js`, `manifest.webmanifest` | installation et fonctionnement hors ligne |
@@ -242,7 +280,8 @@ qui pourrait diverger de ce qui part en production.
 |---|---|
 | `test/geo.test.js` | distances, caps, compacité, allure/pente, polyline, couverture de l'historique |
 | `test/metrics.test.js` | comptage des pas et mesure de distance sur signaux synthétiques |
-| `test/router.test.js` | graphe, accrochage au réseau, Dijkstra, statistiques, planification |
+| `test/router.test.js` | graphe, accrochage au réseau, Dijkstra, relief, planification |
+| `test/coach.test.js` | franchissements de kilomètre, repérage des virages, annonces |
 | `test/harness.js` | chargement des modules, générateurs semés, quartier synthétique |
 | `test/bench.js` | coût d'une génération (`node test/bench.js`, hors suite) |
 
@@ -258,8 +297,9 @@ qui relève d'un réglage à trancher et non d'un correctif (voir plus haut).
 - Le premier téléchargement d'une zone prend **10 à 60 s** selon la charge des
   serveurs Overpass publics. Les calculs suivants au même endroit sont immédiats.
 - Le relief vient de tuiles à ~30 m : le dénivelé est un bon ordre de grandeur,
-  pas une mesure barométrique. Un filtre à hystérésis de 2,5 m évite d'accumuler
-  le bruit des tuiles.
+  pas une mesure barométrique. Deux filtres l'assainissent — un lissage sur les
+  carrefours voisins, puis une hystérésis de 2,5 m le long du tracé — au prix
+  d'un léger rabotage des sommets, mesuré à 2 m sur une crête de 40 m.
 - La qualité du résultat dépend de la cartographie OSM locale : un chemin non
   cartographié n'existe pas pour le moteur, et le mode nuit dépend du tag `lit`,
   souvent absent hors des grandes villes.
@@ -273,6 +313,11 @@ qui relève d'un réglage à trancher et non d'un correctif (voir plus haut).
   ordinateur, ou si la permission de mouvement est refusée (iOS la demande), les
   pas sont *estimés* à partir de la distance et de la vitesse, et affichés
   précédés de « ≈ ».
+- La **vibration** n'est accessible à aucune page web sur iPhone : la case est
+  alors grisée. Les annonces vocales, elles, fonctionnent partout.
+- À l'arrêt, avec un signal annoncé à ±8 m, le compteur de distance dérive
+  encore de quelques centaines de mètres par heure de station debout : c'est un
+  réglage à trancher, décrit plus haut et suivi par un test marqué `todo`.
 
 ## Licence
 

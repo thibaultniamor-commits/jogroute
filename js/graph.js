@@ -208,13 +208,29 @@
   }
 
   /* Les tuiles à ~30 m lissent mal les micro-reliefs : un léger filtre sur les
-     voisins évite des pentes aberrantes sur les tronçons très courts. */
+     voisins évite des pentes aberrantes sur les tronçons très courts.
+
+     La moyenne portait auparavant sur le nœud *et* tous ses voisins à parts
+     égales, ce qui faisait dépendre la force du lissage du nombre de rues qui
+     se croisent : la moitié à un cul-de-sac, un sixième à un carrefour à cinq
+     branches. Un sommet de côte tombe justement à un carrefour, et s'y trouvait
+     donc écrasé — sur une crête de 40 m mesurée au banc d'essai, 5 m de
+     dénivelé réel disparaissaient.
+
+     Le nœud garde maintenant un poids fixe, quel que soit son degré. À 0,30, la
+     crête remonte à 38 m tandis que le bruit inventé reste inchangé (0,8 m au
+     lieu de 0,4 m pour un terrain plat bruité à ±3 m, l'ordre de grandeur des
+     tuiles Terrarium). Au-delà de 0,40, le bruit repasse devant. */
+  var SELF_WEIGHT = 0.30;
+
   function smoothElevation(G) {
     var out = new Float32Array(G.n);
     for (var v = 0; v < G.n; v++) {
-      var sum = G.ele[v], cnt = 1;
+      var sum = 0, cnt = 0;
       for (var k = G.off[v]; k < G.off[v + 1]; k++) { sum += G.ele[G.adjTo[k]]; cnt++; }
-      out[v] = sum / cnt;
+      out[v] = cnt
+        ? SELF_WEIGHT * G.ele[v] + (1 - SELF_WEIGHT) * (sum / cnt)
+        : G.ele[v];                                   // nœud isolé : rien à lisser
     }
     G.ele = out;
   }
@@ -387,6 +403,7 @@
   global.RGraph = {
     build: build, weight: weight, nearest: nearest, family: family,
     finalize: finalize, attachElevation: attachElevation, attachWater: attachWater,
+    smoothElevation: smoothElevation,
     serialize: serialize, deserialize: deserialize, buffersOf: buffersOf,
     HW_LIST: HW_LIST, FAM_LIST: FAM_LIST,
     F_UNPAVED: F_UNPAVED, F_PAVED: F_PAVED, F_SIDEWALK: F_SIDEWALK,
